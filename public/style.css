@@ -290,6 +290,13 @@ td[contenteditable="true"]:focus { background: #eaf7f7; box-shadow: inset 0 0 0 
 .script-shot-dialogue { font-size: 13px; color: var(--brand-dark); margin-top: 3px; }
 .script-shot-caption { font-size: 12px; color: var(--ink-3); margin-top: 3px; }
 
+/* ===== 运镜列 ===== */
+.col-camera { min-width: 64px; }
+/* ===== 场景分组统计 ===== */
+.scene-stats { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 10px; background: #fbfcfe; }
+.scene-stats-title { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
+.scene-chip { display: inline-block; font-size: 12px; color: var(--ink-2); background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; margin: 0 8px 6px 0; }
+
 /* ===== Agent 过程面板 ===== */
 .agent-sub-title { font-size: 14px; font-weight: 700; color: var(--ink-2); margin: 6px 0 10px; }
 .plan-list, .tool-log-list { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }

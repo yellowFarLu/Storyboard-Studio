@@ -488,6 +488,7 @@
       tbody.appendChild(renderRow(row, i));
     });
     updateTotalDuration();
+    renderSceneStats();
     boardSection.classList.remove("section-hidden");
   }
 
@@ -497,6 +498,7 @@
       { cls: "col-idx", text: String(idx + 1), editable: false },
       { cls: "col-scene", text: row.scene, editable: true },
       { cls: "col-scale", text: row.scale, editable: true },
+      { cls: "col-camera", text: row.camera || "固定", editable: true },
       { cls: "col-action", text: row.action, editable: true },
       { cls: "col-dialogue", text: row.dialogue, editable: true },
       { cls: "col-caption", text: row.caption, editable: true },
@@ -529,6 +531,16 @@
               return;
             }
             row.scale = sv;
+            refreshChecksLocal();
+          } else if (c.cls === "col-camera") {
+            var CAMS = ["固定", "推", "拉", "摇", "移", "跟", "升", "降", "环绕", "手持"];
+            var cv = td.textContent.trim();
+            if (CAMS.indexOf(cv) === -1) {
+              td.textContent = row.camera || "固定";
+              toast("运镜需为：固定/推/拉/摇/移/跟/升/降/环绕/手持", true);
+              return;
+            }
+            row.camera = cv;
             refreshChecksLocal();
           } else {
             row[c.cls === "col-scene" ? "scene" : c.cls === "col-action" ? "action" : c.cls === "col-dialogue" ? "dialogue" : "caption"] = td.textContent.trim();
@@ -576,6 +588,9 @@
     if (count > 0 && noD / count > 0.7) issues.push("纯画面镜头占比 " + Math.round((noD / count) * 100) + "%，注意叙事信息密度");
     var bad = arr.filter(function (r) { return validScales.indexOf(r.scale) === -1; });
     if (bad.length) issues.push("存在非法景别：" + bad.map(function (r) { return r.scale; }).join("、"));
+    var CAMS = ["固定", "推", "拉", "摇", "移", "跟", "升", "降", "环绕", "手持"];
+    var badCam = arr.filter(function (r) { return r.camera && CAMS.indexOf(r.camera) === -1; });
+    if (badCam.length) issues.push("存在非法运镜：" + badCam.map(function (r) { return r.camera; }).join("、"));
     var first = arr[0];
     if (!first || (!first.action && !first.dialogue)) issues.push("第一镜缺少强钩子（建议以冲突动作或反常画面开场）");
     return { passed: issues.length === 0, totalDuration: total, shotCount: count, issues: issues };
@@ -595,7 +610,7 @@
     var html = '<div class="script-preview-head">按镜头顺序的可读剧本（与表格实时联动）</div>';
     state.board.forEach(function (r, i) {
       html += '<div class="script-shot">';
-      html += '<div class="script-shot-head"><span class="script-shot-no">镜头 ' + (i + 1) + '</span><span class="script-shot-meta">' + r.scene + ' · ' + r.scale + ' · ' + r.duration + 's</span></div>';
+      html += '<div class="script-shot-head"><span class="script-shot-no">镜头 ' + (i + 1) + '</span><span class="script-shot-meta">' + r.scene + ' · ' + r.scale + ' · ' + (r.camera || "固定") + ' · ' + r.duration + 's</span></div>';
       if (r.action) html += '<div class="script-shot-action">' + r.action + '</div>';
       if (r.dialogue) html += '<div class="script-shot-dialogue">「' + r.dialogue + '」</div>';
       if (r.caption) html += '<div class="script-shot-caption">字幕：' + r.caption + '</div>';
@@ -654,6 +669,47 @@
     }
     html += "</div>";
     box.innerHTML = html;
+  }
+
+  /* ===== 导出 CSV（对标业界 shot list / spreadsheet export，Excel 可直接打开） ===== */
+  function exportCsv() {
+    if (!state.board.length) { toast("还没有可导出的分镜", true); return; }
+    var esc = function (v) { return '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"'; };
+    var rows = [["#", "场景", "景别", "运镜", "画面动作", "台词", "字幕建议", "时长(s)"]];
+    state.board.forEach(function (r, i) {
+      rows.push([i + 1, r.scene, r.scale, r.camera || "固定", r.action, r.dialogue, r.caption, r.duration]);
+    });
+    rows.push([]);
+    rows.push(["合计", "", "", "", "", "", "", state.board.reduce(function (s2, r) { return s2 + (Number(r.duration) || 0); }, 0)]);
+    var csv = rows.map(function (row) { return row.map(esc).join(","); }).join("\r\n");
+    var blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "storyboard-" + Date.now() + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    toast("已导出 CSV（Excel 可直接打开）");
+  }
+
+  /* ===== 渲染：场景分组统计（对标 shot list 场景聚合 / 场次统计） ===== */
+  function renderSceneStats() {
+    if (!state.board.length) return;
+    var box = $("scene-stats");
+    var groups = {};
+    state.board.forEach(function (r) {
+      var key = r.scene || "未指定";
+      groups[key] = groups[key] || { count: 0, duration: 0 };
+      groups[key].count += 1;
+      groups[key].duration += Number(r.duration) || 0;
+    });
+    var html = '<div class="scene-stats-title">🎬 场景分组统计（拍摄计划参考）</div>';
+    Object.keys(groups).forEach(function (k) {
+      html += '<span class="scene-chip">' + k + ' · ' + groups[k].count + " 镜 · " + groups[k].duration + "s</span>";
+    });
+    box.innerHTML = html;
+    box.classList.remove("section-hidden");
   }
 
   /* ===== SSE 解析与 Agent 主流程 ===== */
@@ -841,11 +897,11 @@
   function boardMarkdown() {
     var lines = ["# 第一幕分镜脚本", ""];
     if (state.outline && state.outline.logline) lines.push("> " + state.outline.logline + "\n");
-    lines.push("| # | 场景 | 景别 | 画面动作 | 台词 | 字幕建议 | 时长(s) |");
-    lines.push("|---|------|------|----------|------|----------|--------|");
+    lines.push("| # | 场景 | 景别 | 运镜 | 画面动作 | 台词 | 字幕建议 | 时长(s) |");
+    lines.push("|---|------|------|------|----------|------|----------|--------|");
     state.board.forEach(function (r, i) {
       var esc = function (s) { return String(s).replace(/\|/g, "\\|").replace(/\n/g, " "); };
-      lines.push("| " + (i + 1) + " | " + esc(r.scene) + " | " + esc(r.scale) + " | " + esc(r.action) + " | " + esc(r.dialogue) + " | " + esc(r.caption) + " | " + r.duration + " |");
+      lines.push("| " + (i + 1) + " | " + esc(r.scene) + " | " + esc(r.scale) + " | " + esc(r.camera || "固定") + " | " + esc(r.action) + " | " + esc(r.dialogue) + " | " + esc(r.caption) + " | " + r.duration + " |");
     });
     lines.push("");
     lines.push("> 由「分镜工坊」Agent 生成 · 共 " + state.board.length + " 个镜头 · 总时长 " + $("board-total-duration").textContent + " 秒");
@@ -897,6 +953,7 @@
   $("tab-optimized").addEventListener("click", function () { switchView("optimized"); });
   $("btn-preview").addEventListener("click", togglePreview);
   $("btn-export-json").addEventListener("click", exportJson);
+  $("btn-export-csv").addEventListener("click", exportCsv);
   $("btn-regen-outline").addEventListener("click", function () {
     if (!state.goal) { toast("请先运行 Agent"); return; }
     toast("已基于原目标重新执行 Agent 全流程");

@@ -89,16 +89,16 @@ const OUTLINE_SYSTEM = `你是一位资深的短剧编剧与策划。根据用�
 {"logline":"一句话梗概","worldview":"世界观（1-2句）","protagonist":{"name":"主角名","desc":"特征（1-2句）"},"conflict":"核心冲突（1-2句）","acts":[{"title":"第一幕·钩子","beats":["节拍1","节拍2","节拍3"]},{"title":"第二幕·升级","beats":["..."]},{"title":"第三幕·反转","beats":["..."]}]}`;
 
 const BOARD_SYSTEM = `你是一位专业的短视频短剧分镜师。根据三幕大纲为【第一幕】撰写分镜脚本。
-要求：竖屏9:16，单集60-90秒，每镜3-8秒；开场前3秒必须有强钩子；台词口语化、字幕简洁有力；景别只用 远景/全景/中景/近景/特写。
+要求：竖屏9:16，单集60-90秒，每镜3-8秒；开场前3秒必须有强钩子；台词口语化、字幕简洁有力；景别只用 远景/全景/中景/近景/特写；运镜只用 固定/推/拉/摇/移/跟/升/降/环绕/手持（无特殊运镜用固定）。
 严格只输出 JSON 数组（8-12个镜头）：
-[{"scene":"场景","scale":"景别","action":"画面动作描述","dialogue":"台词（无则空串）","caption":"字幕建议","duration":5}]`;
+[{"scene":"场景","scale":"景别","camera":"运镜","action":"画面动作描述","dialogue":"台词（无则空串）","caption":"字幕建议","duration":5}]`;
 
 const REFLECT_SYSTEM = `你是短剧创作质量评审。对给定的大纲与分镜脚本做客观评审，严格只输出 JSON：
 {"score":0-100的整数,"strengths":["优点1","优点2"],"issues":["问题1","问题2"],"suggestions":["改进建议1","改进建议2"]}
 评审维度：开场钩子强度、节奏与总时长、人物动机清晰度、镜头可拍摄性、字幕/台词质量。`;
 
 const OPTIMIZE_SYSTEM = `你是短剧分镜优化师。基于质量评审的问题与建议，对第一幕分镜脚本做针对性优化。
-要求：保持 JSON 数组格式（8-12个镜头，不允许超过12个），字段与原来一致（scene/scale/action/dialogue/caption/duration）；竖屏9:16，单集60-90秒，每镜3-8秒；开场前3秒必须有强钩子；景别只用 远景/全景/中景/近景/特写。
+要求：保持 JSON 数组格式（8-12个镜头，不允许超过12个），字段与原来一致（scene/scale/camera/action/dialogue/caption/duration）；竖屏9:16，单集60-90秒，每镜3-8秒；开场前3秒必须有强钩子；景别只用 远景/全景/中景/近景/特写；运镜只用 固定/推/拉/摇/移/跟/升/降/环绕/手持。
 严格只输出 JSON：{"summary":"优化说明（1-2句，说明改了什么）","board":[分镜数组]}`;
 
 /* ==================== Mock 工具（内置示例数据，未接真实数据源） ==================== */
@@ -142,6 +142,9 @@ function checkStructure(board) {
   if (count > 0 && noDialogue / count > 0.7) issues.push(`纯画面镜头占比 ${Math.round((noDialogue / count) * 100)}%，注意叙事信息密度`);
   const badScale = (board || []).filter((r) => !validScales.includes(r.scale));
   if (badScale.length) issues.push(`存在非法景别：${badScale.map((r) => r.scale).join("、")}`);
+  const validCams = ["固定", "推", "拉", "摇", "移", "跟", "升", "降", "环绕", "手持"];
+  const badCam = (board || []).filter((r) => r.camera && !validCams.includes(r.camera));
+  if (badCam.length) issues.push(`存在非法运镜：${badCam.map((r) => r.camera).join("、")}`);
   const first = (board || [])[0];
   if (!first || (!first.action && !first.dialogue)) issues.push("第一镜缺少强钩子（建议以冲突动作或反常画面开场）");
 
@@ -505,6 +508,7 @@ function normalizeBoard(raw) {
       id: i + 1,
       scene: String(r.scene || "未指定"),
       scale: String(r.scale || "中景"),
+      camera: String(r.camera || "固定"),
       action: String(r.action || ""),
       dialogue: String(r.dialogue || ""),
       caption: String(r.caption || ""),
