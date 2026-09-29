@@ -7,12 +7,17 @@
     goal: "",
     outline: null,
     board: [],
+    originalBoard: [],
+    optimizedBoard: [],
     checks: null,
     reflection: null,
+    optimization: null,
+    reactLogs: {},
     plan: [],
     toolLogs: [],
     model: "未连接",
     running: false,
+    view: "optimized",
   };
 
   /* ===== DOM ===== */
@@ -114,10 +119,14 @@
       var t = tasks[i];
       t.plan = state.plan;
       t.toolLogs = state.toolLogs;
+      t.reactLogs = state.reactLogs;
       t.outline = state.outline;
       t.board = state.board;
+      t.originalBoard = state.originalBoard;
+      t.optimizedBoard = state.optimizedBoard;
       t.checks = state.checks;
       t.reflection = state.reflection;
+      t.optimization = state.optimization;
       t.model = state.model;
       saveTasks();
       return;
@@ -201,6 +210,7 @@
       var metaParts = [t.createdAt];
       if (t.board && t.board.length) metaParts.push(t.board.length + " 镜头");
       if (t.reflection && t.reflection.score) metaParts.push("评审 " + t.reflection.score + "/100");
+      if (t.optimization && !t.optimization.failed) metaParts.push("已优化");
       meta.textContent = metaParts.join(" · ");
       var actions = document.createElement("div");
       actions.className = "task-actions";
@@ -233,8 +243,12 @@
     state.goal = t.goal || "";
     state.outline = t.outline || null;
     state.board = t.board || [];
+    state.originalBoard = t.originalBoard || [];
+    state.optimizedBoard = t.optimizedBoard || [];
     state.checks = t.checks || null;
     state.reflection = t.reflection || null;
+    state.optimization = t.optimization || null;
+    state.reactLogs = t.reactLogs || {};
     state.plan = t.plan || [];
     state.toolLogs = t.toolLogs || [];
     state.model = t.model || "未连接";
@@ -242,9 +256,11 @@
     agentPanel.classList.remove("section-hidden");
     if (state.plan.length) renderPlan();
     if (state.toolLogs.length) renderToolLog();
+    if (state.reactLogs && Object.keys(state.reactLogs).length) renderReactLog();
     if (state.outline) renderOutline();
     if (state.board.length) { renderBoard(); renderCheckReport(); }
     if (state.reflection) renderReflect();
+    renderOptimize();
     if (state.board.length || state.outline) {
       var bd = taskStatusBadge(t);
       $("agent-mode-badge").textContent = "已恢复·" + bd.text;
@@ -359,6 +375,76 @@
       li.textContent = t;
       el.appendChild(li);
     });
+  }
+
+  /* ===== 渲染：ReAct 循环轨迹（Execute 内部） ===== */
+  function renderReactLog() {
+    var box = $("agent-react-log");
+    box.innerHTML = "";
+    var keys = Object.keys(state.reactLogs || {});
+    if (!keys.length) return;
+    box.innerHTML = '<div class="agent-sub-title">🔄 ReAct 循环（Reason → Act → Observe）</div>';
+    keys.forEach(function (k) {
+      var steps = state.reactLogs[k];
+      if (!steps || !steps.length) return;
+      var node = document.createElement("div");
+      node.className = "react-node";
+      var head = document.createElement("div");
+      head.className = "react-node-title";
+      head.textContent = TOOL_NAMES[k] || k;
+      node.appendChild(head);
+      var rounds = {};
+      steps.forEach(function (st) { (rounds[st.round] = rounds[st.round] || []).push(st); });
+      Object.keys(rounds).forEach(function (r) {
+        if (Number(r) > 0) {
+          var fix = document.createElement("div");
+          fix.className = "react-fix";
+          fix.textContent = "第 " + (Number(r) + 1) + " 轮（自纠）";
+          node.appendChild(fix);
+        }
+        rounds[r].forEach(function (st) {
+          var row = document.createElement("div");
+          row.className = "react-row " + st.phase;
+          var icon = st.phase === "reason" ? "🤔 思考" : st.phase === "act" ? "⚡ 行动" : "👁 观察";
+          row.textContent = icon + " " + (st.text || "");
+          node.appendChild(row);
+        });
+      });
+      box.appendChild(node);
+    });
+  }
+
+  /* ===== 渲染：优化条（Optimize） ===== */
+  function renderOptimize() {
+    var bar = $("optimize-bar");
+    if (!state.optimization) return;
+    bar.classList.remove("section-hidden");
+    var info = $("optimize-info");
+    var opt = state.optimization;
+    var html;
+    if (opt.failed) {
+      html = "⚠️ <strong>优化未完成</strong>：" + (opt.summary || "已保留原版分镜");
+    } else {
+      html = "✅ <strong>Agent 已基于反思优化</strong>：" + (opt.summary || "");
+      html += " ｜ 总时长 " + (opt.originalDuration || "--") + "s→" + (opt.optimizedDuration || "--") + "s";
+      html += " ｜ 结构问题 " + (opt.originalIssues || 0) + "→" + (opt.optimizedIssues || 0);
+    }
+    info.innerHTML = html;
+  }
+
+  /* ===== 分镜原版/优化版切换 ===== */
+  function switchView(view) {
+    state.view = view;
+    if (view === "original" && state.originalBoard.length) {
+      state.board = state.originalBoard;
+      $("tab-original").classList.add("active");
+      $("tab-optimized").classList.remove("active");
+    } else {
+      state.board = state.optimizedBoard.length ? state.optimizedBoard : state.board;
+      $("tab-optimized").classList.add("active");
+      $("tab-original").classList.remove("active");
+    }
+    renderBoard();
   }
 
   /* ===== 渲染：大纲 ===== */
@@ -498,11 +584,16 @@
     state.goal = goal;
     state.outline = null;
     state.board = [];
+    state.originalBoard = [];
+    state.optimizedBoard = [];
     state.checks = null;
     state.reflection = null;
+    state.optimization = null;
+    state.reactLogs = {};
     state.plan = [];
     state.toolLogs = [];
     state.running = true;
+    state.view = "optimized";
 
     // 创建任务记录（刷新可恢复）
     var task = createTask(goal, memoryList);
@@ -514,7 +605,9 @@
     boardSection.classList.add("section-hidden");
     $("check-report").classList.add("section-hidden");
     $("agent-reflect").classList.add("section-hidden");
+    $("optimize-bar").classList.add("section-hidden");
     $("agent-tool-log").innerHTML = "";
+    $("agent-react-log").innerHTML = "";
     $("agent-plan").innerHTML = "";
     agentPanel.classList.remove("section-hidden");
     btnRun.disabled = true;
@@ -538,7 +631,7 @@
       if (state.board.length) { renderBoard(); renderCheckReport(); }
       if (state.reflection) renderReflect();
       setStep(3);
-      toast(state.reflection ? "Agent 已完成全部工作" : "Agent 执行完成（部分步骤失败）", !state.reflection);
+      toast(state.reflection ? "Agent 已完成：规划→执行→反思→优化" : "Agent 执行完成（部分步骤失败）", !state.reflection);
     }).catch(function (e) {
       toast("Agent 执行失败：" + e.message, true);
       $("agent-mode-badge").textContent = "失败";
@@ -575,7 +668,18 @@
       try { obj = JSON.parse(data); } catch (e) { return; }
 
       if (event === "stage") {
-        if (obj.step === "plan" && obj.plan) {
+        if (obj.step === "react") {
+          if (!state.reactLogs[obj.tool]) state.reactLogs[obj.tool] = [];
+          var rl = state.reactLogs[obj.tool];
+          var lastR = rl[rl.length - 1];
+          if (!lastR || lastR.round !== obj.round || lastR.phase !== obj.phase) {
+            rl.push({ round: obj.round, phase: obj.phase, text: obj.text });
+          }
+          renderReactLog();
+        } else if (obj.step === "optimize") {
+          if (obj.status === "running") { toast("Agent 正在基于反思优化分镜…"); }
+          else if (obj.status === "failed") { toast(obj.message, true); }
+        } else if (obj.step === "plan" && obj.plan) {
           state.plan = obj.plan;
           renderPlan();
           setStep(0);
@@ -594,16 +698,27 @@
         state.plan = obj.plan || state.plan;
         state.outline = obj.outline || null;
         state.board = obj.board || [];
+        state.originalBoard = obj.originalBoard || [];
+        state.optimizedBoard = obj.board || [];
         state.checks = obj.checks || null;
         state.reflection = obj.reflection || null;
+        state.optimization = obj.optimization || null;
+        // 后端 done 携带的是简版 reactLogs（仅轮次数），保留前端 SSE 过程收集的详细轨迹（含 phase/text）
+        var serverLogs = obj.reactLogs || {};
+        var hasDetail = Object.keys(serverLogs).some(function (k) {
+          return (serverLogs[k] || []).some(function (x) { return x && x.phase; });
+        });
+        if (hasDetail) state.reactLogs = serverLogs;
         state.toolLogs = obj.toolLogs || [];
         if (obj.model) state.model = obj.model;
         renderPlan();
         renderToolLog();
+        renderReactLog();
         renderOutline();
         renderBoard();
         renderCheckReport();
         renderReflect();
+        renderOptimize();
         for (var i = 0; i < tasks.length; i++) {
           if (tasks[i].id === currentTaskId) tasks[i].status = "done";
         }
@@ -690,6 +805,8 @@
 
   /* ===== 事件绑定 ===== */
   btnRun.addEventListener("click", runAgent);
+  $("tab-original").addEventListener("click", function () { switchView("original"); });
+  $("tab-optimized").addEventListener("click", function () { switchView("optimized"); });
   $("btn-regen-outline").addEventListener("click", function () {
     if (!state.goal) { toast("请先运行 Agent"); return; }
     toast("已基于原目标重新执行 Agent 全流程");

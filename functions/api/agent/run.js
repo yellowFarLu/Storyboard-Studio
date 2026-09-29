@@ -1,17 +1,21 @@
 /**
  * 分镜工坊 - Agent 工作台（Cloudflare Pages Function）
  *
- * 架构：PERO（Plan → Execute → Observe → Reflect）
- * - Plan：LLM 根据用户目标与记忆生成创作计划（步骤动作从白名单中选择）
- * - Execute：按计划逐步执行（LLM 生成 / 工具调用），Worker 校验并修正依赖顺序
- * - Observe：每步执行后推送观察结果（SSE 过程可见，供前端实时展示）
- * - Reflect：LLM 对产出做质量评审，输出评分与改进建议
+ * 架构：PERO（Plan → Execute[ReAct] → Reflect → Optimize）
+ * - Plan：LLM 多节点规划，生成任务计划列表（Plan-And-Execute 的规划优点）
+ * - Execute：每个节点以 ReAct 方式执行（Reason → Act → Observe 循环）：
+ *     生成类节点（大纲/分镜）先由 LLM 产出，再经规则校验（Observe），
+ *     不合格则把校验反馈交回 LLM 自纠（Reason → Act），最多自纠 1 轮，
+ *     保留大模型在每个节点的智能决策能力
+ * - Reflect：LLM 对产出做质量评审（评分/优点/问题/建议）
+ * - Optimize：基于 Reflect 的问题与建议，LLM 产出优化后的分镜并再次校验
+ *     （Reflexion 闭环），前端提供原版/优化版对比
  *
  * 工具注册表（真实能力边界如实标注）：
  * - lookup_trend     爆款题材热度查询 → Mock（内置示例数据，未接真实数据源）
  * - search_materials 创作素材搜索     → Mock（内置示例素材，未接真实搜索引擎）
- * - gen_outline      LLM 生成三幕大纲  → 真实（DeepSeek）
- * - gen_board        LLM 生成第一幕分镜 → 真实（DeepSeek）
+ * - gen_outline      LLM 生成三幕大纲  → 真实（DeepSeek，ReAct 自纠）
+ * - gen_board        LLM 生成第一幕分镜 → 真实（DeepSeek，ReAct 自纠）
  * - check_structure  分镜结构检查      → 真实（本地规则引擎）
  *
  * 记忆：来自前端的用户偏好（localStorage 持久化），注入规划与生成的 Prompt。
@@ -21,6 +25,7 @@
  */
 
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_FIX_ROUNDS = 1; // 生成节点 ReAct 自纠最大轮数
 
 const TOOL_WHITELIST = ["lookup_trend", "search_materials", "gen_outline", "gen_board", "check_structure"];
 
@@ -92,6 +97,10 @@ const REFLECT_SYSTEM = `你是短剧创作质量评审。对给定的大纲与�
 {"score":0-100的整数,"strengths":["优点1","优点2"],"issues":["问题1","问题2"],"suggestions":["改进建议1","改进建议2"]}
 评审维度：开场钩子强度、节奏与总时长、人物动机清晰度、镜头可拍摄性、字幕/台词质量。`;
 
+const OPTIMIZE_SYSTEM = `你是短剧分镜优化师。基于质量评审的问题与建议，对第一幕分镜脚本做针对性优化。
+要求：保持 JSON 数组格式（8-12个镜头，不允许超过12个），字段与原来一致（scene/scale/action/dialogue/caption/duration）；竖屏9:16，单集60-90秒，每镜3-8秒；开场前3秒必须有强钩子；景别只用 远景/全景/中景/近景/特写。
+严格只输出 JSON：{"summary":"优化说明（1-2句，说明改了什么）","board":[分镜数组]}`;
+
 /* ==================== Mock 工具（内置示例数据，未接真实数据源） ==================== */
 function mockLookupTrend(idea) {
   const rows = [
@@ -143,6 +152,115 @@ function checkStructure(board) {
     issues,
     mock: false,
   };
+}
+
+/** 大纲轻量校验（ReAct 的 Observe 用） */
+function checkOutline(outline) {
+  const issues = [];
+  if (!outline || !outline.logline) issues.push("缺少一句话梗概（logline）");
+  const acts = (outline && outline.acts) || [];
+  if (acts.length !== 3) issues.push(`三幕结构不完整（当前 ${acts.length} 幕，应为 3 幕）`);
+  if (acts.length === 3 && acts.some((a) => !a.beats || a.beats.length < 2)) issues.push("部分幕的节拍过少（每幕建议至少 2 个节拍）");
+  return issues;
+}
+
+/* ==================== ReAct 执行：生成类节点 ==================== */
+/** 生成三幕大纲（ReAct：Reason → Act → Observe → 自纠） */
+async function genOutlineReAct(env, controller, encoder, goal, memoryText, toolObs) {
+  const reactLog = [];
+  let outline = null;
+  let issues = [];
+  let model = "";
+
+  for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
+    const isFix = round > 0;
+    sseEvent(controller, encoder, "stage", {
+      step: "react", tool: "gen_outline", round, phase: "reason",
+      text: isFix ? "依据校验反馈重新构思大纲结构" : "根据目标与工具观察构思三幕大纲",
+    });
+    const user = `用户目标：${goal}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${toolObs ? `工具观察：\n${toolObs}\n` : ""}${isFix ? `\n上一版大纲的校验问题（需修正）：\n${issues.join("\n")}\n请输出修正后的完整大纲 JSON。` : "请输出三幕大纲 JSON。"}`;
+    const llmOut = await callLLM(env, [{ role: "system", content: OUTLINE_SYSTEM }, { role: "user", content: user }], 0.8);
+    model = llmOut.model;
+    outline = normalizeOutline(parseJsonLoose(llmOut.content));
+
+    // Observe
+    issues = checkOutline(outline);
+    sseEvent(controller, encoder, "stage", {
+      step: "react", tool: "gen_outline", round, phase: "act",
+      text: `已生成大纲（logline：${(outline.logline || "").slice(0, 30)}…）`,
+    });
+    sseEvent(controller, encoder, "stage", {
+      step: "react", tool: "gen_outline", round, phase: "observe",
+      text: issues.length ? `大纲校验发现 ${issues.length} 项问题（${issues[0]}）` : "大纲校验通过（三幕结构完整）",
+    });
+    reactLog.push({ round, issues: issues.length });
+    if (!issues.length) break;
+  }
+
+  return { outline, model, reactLog, fixed: reactLog.length > 1 };
+}
+
+/** 生成第一幕分镜（ReAct：Reason → Act → Observe → 自纠） */
+async function genBoardReAct(env, controller, encoder, outline, goal, memoryText) {
+  const reactLog = [];
+  let board = null;
+  let checks = null;
+  let model = "";
+
+  for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
+    const isFix = round > 0;
+    sseEvent(controller, encoder, "stage", {
+      step: "react", tool: "gen_board", round, phase: "reason",
+      text: isFix ? "依据结构校验反馈调整镜头设计" : "依据三幕大纲设计第一幕分镜",
+    });
+    const user = `三幕大纲：\n${JSON.stringify(outline, null, 2)}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${isFix ? `\n当前分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整分镜 JSON 数组。` : "请为第一幕输出分镜脚本 JSON 数组。"}`;
+    const llmOut = await callLLM(env, [{ role: "system", content: BOARD_SYSTEM }, { role: "user", content: user }], 0.8);
+    model = llmOut.model;
+    board = normalizeBoard(parseJsonLoose(llmOut.content));
+
+    // Observe
+    checks = checkStructure(board);
+    sseEvent(controller, encoder, "stage", {
+      step: "react", tool: "gen_board", round, phase: "act",
+      text: `已生成 ${board.length} 个镜头（总时长 ${checks.totalDuration}s）`,
+    });
+    sseEvent(controller, encoder, "stage", {
+      step: "react", tool: "gen_board", round, phase: "observe",
+      text: checks.passed ? "结构校验通过（镜头数与时长符合规范）" : `结构校验发现 ${checks.issues.length} 项问题（${checks.issues[0]}）`,
+    });
+    reactLog.push({ round, issues: checks.issues.length });
+    if (checks.passed) break;
+  }
+
+  return { board, checks, model, reactLog, fixed: reactLog.length > 1 };
+}
+
+/* ==================== Optimize：Reflexion 闭环 ==================== */
+async function optimizeBoard(env, controller, encoder, outline, board, checks, reflection) {
+  sseEvent(controller, encoder, "stage", { step: "optimize", status: "running", message: "Agent 正在基于反思结果优化分镜…" });
+  let model = "";
+  try {
+    const user = `三幕大纲：\n${JSON.stringify(outline, null, 2)}\n\n第一幕分镜：\n${JSON.stringify(board, null, 2)}\n\n结构检查：\n${JSON.stringify(checks)}\n\n质量评审问题：\n${reflection.issues.join("\n")}\n\n改进建议：\n${reflection.suggestions.join("\n")}\n\n请根据以上问题与建议，输出优化后的第一幕分镜脚本。`;
+    const llmOut = await callLLM(env, [{ role: "system", content: OPTIMIZE_SYSTEM }, { role: "user", content: user }], 0.6);
+    model = llmOut.model;
+    const raw = parseJsonLoose(llmOut.content);
+    const optimizedBoard = normalizeBoard(Array.isArray(raw) ? raw : raw.board);
+    const summary = typeof raw.summary === "string" ? raw.summary : (Array.isArray(raw) ? "已根据评审建议优化分镜" : "");
+    const newChecks = checkStructure(optimizedBoard);
+    sseEvent(controller, encoder, "stage", {
+      step: "optimize", status: "done", summary,
+      optimizedCount: optimizedBoard.length,
+      optimizedDuration: newChecks.totalDuration,
+      issuesBefore: checks.issues.length,
+      issuesAfter: newChecks.issues.length,
+      passed: newChecks.passed,
+      model,
+    });
+    return { optimizedBoard, newChecks, summary, model };
+  } catch (e) {
+    sseEvent(controller, encoder, "stage", { step: "optimize", status: "failed", message: `优化失败：${e.message}（保留原版分镜）` });
+    return { optimizedBoard: board, newChecks: checks, summary: "", model: "", failed: true };
+  }
 }
 
 /* ==================== 计划生成与修正 ==================== */
@@ -233,7 +351,7 @@ export async function onRequestPost(context) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        // ===== P: Plan =====
+        // ===== P: Plan（多节点规划，Plan-And-Execute） =====
         sseEvent(controller, encoder, "stage", { step: "plan", status: "running", message: "Agent 正在规划创作路径…" });
         const planResult = await buildPlan(env, goal, memoryText);
         const plan = planResult.steps.map((s, i) => ({ id: i + 1, ...s, status: "pending" }));
@@ -246,39 +364,50 @@ export async function onRequestPost(context) {
         let outline = null;
         let board = null;
         let checks = null;
+        let outlineModel = "";
+        let boardModel = "";
         const toolLogs = [];
-        let firstGeneration = true;
+        const reactLogs = { gen_outline: [], gen_board: [] };
 
-        // ===== E + O: Execute & Observe =====
+        // ===== E: Execute（每节点 ReAct） =====
         for (const step of plan) {
           sseEvent(controller, encoder, "stage", { step: "tool", tool: step.action, status: "running", message: `执行：${step.note || step.action}` });
           try {
             if (step.action === "lookup_trend") {
+              sseEvent(controller, encoder, "stage", { step: "react", tool: step.action, round: 0, phase: "reason", text: "规划决策：先定位爆款题材方向" });
               const r = mockLookupTrend(goal);
               toolLogs.push({ tool: "lookup_trend", status: "done", mock: true, summary: r.summary });
+              sseEvent(controller, encoder, "stage", { step: "react", tool: step.action, round: 0, phase: "act", text: "调用 lookup_trend" });
               sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: true, summary: r.summary, detail: r.detail });
             } else if (step.action === "search_materials") {
+              sseEvent(controller, encoder, "stage", { step: "react", tool: step.action, round: 0, phase: "reason", text: "规划决策：检索参考素材补充灵感" });
               const r = mockSearchMaterials(goal);
               toolLogs.push({ tool: "search_materials", status: "done", mock: true, summary: r.summary });
+              sseEvent(controller, encoder, "stage", { step: "react", tool: step.action, round: 0, phase: "act", text: "调用 search_materials" });
               sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: true, summary: r.summary, detail: r.items });
             } else if (step.action === "gen_outline") {
               const obs = toolLogs.filter((l) => l.mock).map((l) => l.summary).join("；");
-              const user = `用户目标：${goal}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${obs ? `工具观察：\n${obs}\n` : ""}请输出三幕大纲 JSON。`;
-              const { content, model } = await callLLM(env, [{ role: "system", content: OUTLINE_SYSTEM }, { role: "user", content: user }], 0.8);
-              outline = normalizeOutline(parseJsonLoose(content));
-              toolLogs.push({ tool: "gen_outline", status: "done", mock: false, summary: `大纲已生成：${(outline.logline || "").slice(0, 40)}…` });
-              sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: "三幕大纲已生成", model });
+              const r = await genOutlineReAct(env, controller, encoder, goal, memoryText, obs);
+              outline = r.outline;
+              outlineModel = r.model;
+              reactLogs.gen_outline = r.reactLog;
+              toolLogs.push({ tool: "gen_outline", status: "done", mock: false, summary: `大纲已生成${r.fixed ? "（自纠 1 轮后通过）" : ""}：${(outline.logline || "").slice(0, 40)}…` });
+              sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: "三幕大纲已生成", model: outlineModel });
             } else if (step.action === "gen_board") {
               if (!outline) throw new Error("缺少大纲，无法生成分镜");
-              const user = `三幕大纲：\n${JSON.stringify(outline, null, 2)}\n请为第一幕输出分镜脚本 JSON 数组。`;
-              const { content, model } = await callLLM(env, [{ role: "system", content: BOARD_SYSTEM }, { role: "user", content: user }], 0.8);
-              board = normalizeBoard(parseJsonLoose(content));
-              toolLogs.push({ tool: "gen_board", status: "done", mock: false, summary: `分镜已生成：${board.length} 个镜头` });
-              sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: `第一幕分镜已生成（${board.length} 个镜头）`, model });
+              const r = await genBoardReAct(env, controller, encoder, outline, goal, memoryText);
+              board = r.board;
+              checks = r.checks;
+              boardModel = r.model;
+              reactLogs.gen_board = r.reactLog;
+              toolLogs.push({ tool: "gen_board", status: "done", mock: false, summary: `分镜已生成：${board.length} 个镜头${r.fixed ? "（自纠 1 轮后通过）" : ""}` });
+              sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: `第一幕分镜已生成（${board.length} 个镜头）`, model: boardModel });
             } else if (step.action === "check_structure") {
               if (!board) throw new Error("缺少分镜，无法检查结构");
+              sseEvent(controller, encoder, "stage", { step: "react", tool: step.action, round: 0, phase: "reason", text: "规划决策：对分镜做结构校验" });
               checks = checkStructure(board);
               toolLogs.push({ tool: "check_structure", status: "done", mock: false, summary: checks.passed ? "结构检查通过" : `结构检查发现 ${checks.issues.length} 项问题` });
+              sseEvent(controller, encoder, "stage", { step: "react", tool: step.action, round: 0, phase: "act", text: "运行结构检查规则引擎" });
               sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: checks.passed ? "结构检查通过" : `发现 ${checks.issues.length} 项问题`, detail: checks.issues });
             }
             const p = plan.find((x) => x.action === step.action);
@@ -294,7 +423,7 @@ export async function onRequestPost(context) {
 
         if (!outline || !board) throw new Error("Agent 未能产出大纲或分镜");
 
-        // ===== R: Reflect =====
+        // ===== R: Reflect（质量评审） =====
         sseEvent(controller, encoder, "stage", { step: "reflect", status: "running", message: "Agent 正在对产出做质量评审…" });
         let reflection;
         try {
@@ -309,14 +438,28 @@ export async function onRequestPost(context) {
         }
         sseEvent(controller, encoder, "stage", { step: "reflect", status: "done", reflection });
 
+        // ===== O: Optimize（Reflexion 闭环） =====
+        const opt = await optimizeBoard(env, controller, encoder, outline, board, checks, reflection);
+
         // ===== done =====
         sseEvent(controller, encoder, "done", {
           ok: true,
           plan,
           outline,
-          board,
-          checks,
+          board: opt.optimizedBoard,          // 展示版 = 优化版
+          originalBoard: board,               // 对比用
+          checks: opt.newChecks,
           reflection,
+          optimization: {
+            summary: opt.summary,
+            originalDuration: checks.totalDuration,
+            optimizedDuration: opt.newChecks.totalDuration,
+            originalIssues: checks.issues.length,
+            optimizedIssues: opt.newChecks.issues.length,
+            failed: !!opt.failed,
+            model: opt.model || boardModel,
+          },
+          reactLogs,
           toolLogs,
           memoryUsed: memoryText ? memory : [],
         });

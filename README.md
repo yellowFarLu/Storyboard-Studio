@@ -11,7 +11,7 @@
 
 ## 产品定位
 
-短剧/短视频创作者写分镜耗时且缺少结构化工具。分镜工坊把"从创意到分镜"交给一个 AI Agent：输入一句话创作目标，Agent 自主规划（Plan）、分步执行（Execute，含工具调用）、观察结果（Observe）、反思自评（Reflect），产出可编辑的三幕大纲与第一幕逐镜分镜脚本，从 0 到 1 快速验证一个故事是否"值得拍"。
+短剧/短视频创作者写分镜耗时且缺少结构化工具。分镜工坊把"从创意到分镜"交给一个 AI Agent：输入一句话创作目标，Agent 按 PERO 架构工作：Plan（LLM 多节点规划）→ Execute（每个节点以 ReAct 方式执行：Reason→Act→Observe，生成类节点经规则校验不合格即交回 LLM 自纠）→ Reflect（LLM 质量评审）→ Optimize（基于反思优化分镜并再次校验），产出可编辑的三幕大纲与第一幕逐镜分镜脚本，从 0 到 1 快速验证一个故事是否"值得拍"。
 
 ## 问题定义与关键选择
 
@@ -35,19 +35,23 @@
 用户目标 + 记忆
    │
    ▼
-P  Plan       LLM 生成创作计划（步骤动作白名单；Worker 校验并修正依赖顺序）
+P  Plan            LLM 生成创作计划（步骤动作白名单；Worker 校验并修正依赖顺序）
    │
    ▼
-E  Execute    按计划逐步执行：LLM 生成 + 工具调用（工具结果回填生成上下文）
+E  Execute(ReAct)  每个节点以 ReAct 执行：
+                   生成类节点（大纲/分镜）→ LLM 产出 → 规则校验(Observe)
+                   → 不合格交回 LLM 自纠（Reason→Act）→ 再校验，最多自纠 1 轮
+                   工具节点（热度/素材/结构检查）→ 调用 → 结果观察
    │
    ▼
-O  Observe    每步执行结果以 SSE 实时推送前端（过程可见、可追溯）
+R  Reflect         LLM 对大纲+分镜+结构检查做质量评审（评分/优点/问题/改进建议）
    │
    ▼
-R  Reflect    LLM 对大纲+分镜+结构检查做质量评审（评分/优点/问题/改进建议）
+O  Optimize        基于反思的问题与建议，LLM 产出优化版分镜并再次结构校验
+                   （Reflexion 闭环；前端提供 原版/优化版 对比）
    │
    ▼
-   产出：三幕大纲 + 第一幕分镜 + 结构检查报告 + 反思报告
+   产出：三幕大纲 + 第一幕分镜（原版+优化版）+ 结构检查报告 + 反思报告
 ```
 
 - **记忆**：用户创作偏好（localStorage 本地模拟长期记忆）注入规划与生成 Prompt，支持增删；未接数据库/向量记忆（已标注）
@@ -61,11 +65,11 @@ R  Reflect    LLM 对大纲+分镜+结构检查做质量评审（评分/优点/�
 | 分镜生成 gen_board | 真实 | DeepSeek 大模型 |
 | 结构检查 check_structure | 真实 | 本地规则引擎（镜头数/总时长/景别/钩子/台词密度） |
 
-- **过程可见**：前端实时展示计划步骤状态、工具调用日志（Mock 徽标）、反思报告，类 RAG 检索过程展示
+- **过程可见**：前端实时展示计划步骤状态、工具调用日志（Mock 徽标）、ReAct 循环轨迹（每个生成节点的 Reason→Act→Observe 与自纠轮次）、反思报告、优化对比条（原版/优化版切换）
 
 ## 功能
 
-- **Agent 全流程**：一句话目标 → 规划 → 执行 → 观察 → 反思 → 产出大纲与分镜
+- **Agent 全流程（PERO）**：一句话目标 → 规划 → 执行（ReAct 自纠）→ 反思 → 优化 → 产出大纲与分镜（原版/优化版）
 - **可编辑**：大纲与分镜表格单元格直接编辑；分镜支持增删镜头
 - **任务历史**：最近任务与产出持久化到 localStorage，刷新页面可恢复查看；运行中断标记「已中断」并可一键重新生成
 - **导出**：一键复制 Markdown / 导出 `.md`（含 Agent 质量评审分）
@@ -79,7 +83,7 @@ R  Reflect    LLM 对大纲+分镜+结构检查做质量评审（评分/优点/�
    │  POST /api/agent/run（SSE 流式事件）
    ▼
 Cloudflare Pages Function（functions/api/agent/run.js）
-   │  PERO 循环：plan → execute（LLM + 工具）→ observe → reflect
+   │  PERO：plan → execute（每节点 ReAct + 工具）→ reflect → optimize
    ▼
 大模型 API（默认 DeepSeek deepseek-chat，可换 SiliconFlow 等）
 ```
@@ -164,7 +168,7 @@ LLM_MODEL = "deepseek-chat"
 
 **真实可用：**
 
-- PERO 全循环（LLM 规划、真实大纲/分镜生成、本地规则结构检查、LLM 质量反思）
+- PERO 全循环（LLM 多节点规划、真实大纲/分镜生成 + ReAct 自纠、本地规则结构检查、LLM 质量反思、Reflexion 优化闭环与原版/优化版对比）
 - SSE 过程实时展示；大纲/分镜编辑、增删镜头、复制与导出 Markdown
 - 任务历史：localStorage 持久化任务快照，刷新恢复、中断标记、重新生成（服务端无任务队列，属本地持久化）
 
