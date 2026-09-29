@@ -58,8 +58,12 @@
     try {
       var raw = localStorage.getItem(MEMORY_KEY);
       var arr = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(arr)) throw new Error("bad");
       return arr.length ? arr : DEFAULT_MEMORY.slice();
-    } catch (e) { return DEFAULT_MEMORY.slice(); }
+    } catch (e) {
+      saveMemory(DEFAULT_MEMORY); // 清理损坏数据并恢复默认
+      return DEFAULT_MEMORY.slice();
+    }
   }
   function saveMemory(list) {
     try { localStorage.setItem(MEMORY_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
@@ -75,7 +79,11 @@
     try {
       var raw = localStorage.getItem(TASKS_KEY);
       tasks = raw ? JSON.parse(raw) : [];
-    } catch (e) { tasks = []; }
+      if (!Array.isArray(tasks)) throw new Error("bad");
+    } catch (e) {
+      tasks = [];
+      saveTasks(); // 清理损坏数据，避免反复解析失败
+    }
   }
   function saveTasks() {
     try { localStorage.setItem(TASKS_KEY, JSON.stringify(tasks.slice(0, MAX_TASKS))); } catch (e) { /* ignore */ }

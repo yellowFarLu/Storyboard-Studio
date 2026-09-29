@@ -132,6 +132,16 @@ function mockResult(type) {
   ];
 }
 
+export async function onRequest(context) {
+  if (context.request.method !== "POST") {
+    return new Response(JSON.stringify({ ok: false, error: "仅支持 POST 请求" }), {
+      status: 405,
+      headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  }
+  return onRequestPost(context);
+}
+
 export async function onRequestPost(context) {
   const { request, env } = context;
 
