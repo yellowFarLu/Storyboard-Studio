@@ -1,12 +1,12 @@
 /**
  * 分镜工坊 - 基于历史分镜续写【第二幕】（Cloudflare Pages Function）
  *
- * 能力：接收 创作目标 + 三幕大纲 + 第一幕分镜（来自历史任务恢复），
- *       调用 LLM（DeepSeek）生成第二幕分镜（8-12 镜 / 60-90s），
+ * 能力：接收 创作目标 + 三幕大纲 + 已完成分镜（来自历史任务恢复），
+ *       调用 LLM（DeepSeek）按 act 参数续写【第二幕】或【第三幕】分镜（8-12 镜 / 60-90s），
  *       经本地规则校验（Observe），不合格交回 LLM 自纠最多 1 轮（与 run.js 一致）。
  *
  * 真实能力边界：
- * - gen_act2  第二幕分镜生成 → 真实（DeepSeek，ReAct 自纠）
+ * - gen_act2  续写分镜生成（第二幕/第三幕） → 真实（DeepSeek，ReAct 自纠）
  * - check     分镜结构检查   → 真实（本地规则引擎，与 run.js check_structure 同规则）
  *
  * 安全：与 run.js 一致——仅 POST；JSON；请求体限长；Key 仅存 Secret。
@@ -99,7 +99,18 @@ function checkStructure(board) {
 }
 
 /* ==================== Prompt 模板 ==================== */
-const ACT2_SYSTEM = `你是一位专业的短视频短剧分镜师。用户已完成【第一幕】分镜脚本，请基于第一幕结尾与三幕大纲，为【第二幕·升级】续写分镜脚本。
+function actSystem(act) {
+  if (act === "第三幕") {
+    return `你是一位专业的短视频短剧分镜师。用户已完成第一幕与第二幕分镜脚本，请基于第二幕结尾与三幕大纲，为【第三幕·反转】续写分镜脚本。
+要求：
+- 承接第二幕结尾的悬念与危机，完成第三幕的叙事任务「真相揭露、反转落地、情绪释放收束」，结局要给出明确的剧情收口；
+- 竖屏9:16，单幕60-90秒，每镜3-8秒；第三幕第一镜前3秒要延续第二幕结尾的钩子；
+- 台词口语化、字幕简洁有力（每屏10字内）；场景与人物必须与前两幕一致，不得凭空换人；
+- 景别只用 远景/全景/中景/近景/特写；运镜只用 固定/推/拉/摇/移/跟/升/降/环绕/手持（无特殊运镜用固定）。
+严格只输出 JSON 数组（8-12个镜头），不要输出任何其他文字：
+[{"scene":"场景","scale":"景别","camera":"运镜","action":"画面动作描述","dialogue":"台词（无则空串）","caption":"字幕建议","duration":5}]`;
+  }
+  return `你是一位专业的短视频短剧分镜师。用户已完成【第一幕】分镜脚本，请基于第一幕结尾与三幕大纲，为【第二幕·升级】续写分镜脚本。
 要求：
 - 承接第一幕结尾的情境、人物状态与悬念，推进冲突升级（第二幕的叙事任务是「升级压迫、埋设第三幕反转的伏笔」）；
 - 竖屏9:16，单幕60-90秒，每镜3-8秒；第二幕第一镜前3秒要延续第一幕结尾的钩子；
@@ -107,9 +118,10 @@ const ACT2_SYSTEM = `你是一位专业的短视频短剧分镜师。用户已�
 - 景别只用 远景/全景/中景/近景/特写；运镜只用 固定/推/拉/摇/移/跟/升/降/环绕/手持（无特殊运镜用固定）。
 严格只输出 JSON 数组（8-12个镜头），不要输出任何其他文字：
 [{"scene":"场景","scale":"景别","camera":"运镜","action":"画面动作描述","dialogue":"台词（无则空串）","caption":"字幕建议","duration":5}]`;
+}
 
 /* ==================== ReAct 生成第二幕（生成 → 规则校验 → 自纠最多 1 轮） ==================== */
-async function genAct2ReAct(env, goal, outline, act1Board, memoryText) {
+async function genAct2ReAct(env, act, goal, outline, prevBoard, memoryText) {
   const reactLog = [];
   let shots = null;
   let checks = null;
@@ -117,8 +129,8 @@ async function genAct2ReAct(env, goal, outline, act1Board, memoryText) {
 
   for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
     const isFix = round > 0;
-    const user = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n第一幕分镜（已完成的 8-12 镜，供承接）：\n${JSON.stringify(act1Board, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${isFix ? `\n上一版第二幕分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整第二幕分镜 JSON 数组。` : "\n请为第二幕输出分镜脚本 JSON 数组。"}`;
-    const llmOut = await callLLM(env, [{ role: "system", content: ACT2_SYSTEM }, { role: "user", content: user }], 0.8);
+    const user = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n已完成分镜（供承接）：\n${JSON.stringify(prevBoard, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${isFix ? `\n上一版${act}分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整${act}分镜 JSON 数组。` : `\n请为${act}输出分镜脚本 JSON 数组。`}`;
+    const llmOut = await callLLM(env, [{ role: "system", content: actSystem(act) }, { role: "user", content: user }], 0.8);
     model = llmOut.model;
     shots = normalizeBoard(parseJsonLoose(llmOut.content));
 
@@ -171,24 +183,25 @@ export async function onRequest(context) {
       status: 400, headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
+  const act = body.act === "第三幕" ? "第三幕" : "第二幕";
   const outline = body.outline && typeof body.outline === "object" ? body.outline : null;
   const memory = Array.isArray(body.memory) ? body.memory.filter((m) => typeof m === "string" && m.trim()) : [];
   const memoryText = memory.map((m) => `· ${m}`).join("\n");
 
-  const act1Board = normalizeBoard(body.board);
+  const prevBoard = normalizeBoard(body.board);
 
   try {
-    const { shots, checks, model, reactLog, fixed } = await genAct2ReAct(env, goal, outline, act1Board, memoryText);
+    const { shots, checks, model, reactLog, fixed } = await genAct2ReAct(env, act, goal, outline, prevBoard, memoryText);
     return new Response(JSON.stringify({
       ok: true,
-      act: "第二幕",
+      act,
       shots,
       checks,
       model,
       fixed,
-      totalShots: act1Board.length + shots.length,
-      act1Count: act1Board.length,
-      act2Count: shots.length,
+      totalShots: prevBoard.length + shots.length,
+      prevCount: prevBoard.length,
+      actCount: shots.length,
       reactLog,
     }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
   } catch (e) {

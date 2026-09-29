@@ -10,3 +10,9 @@ pages_build_output_dir = "./public"
 [vars]
 LLM_API_BASE = "https://api.deepseek.com/v1"
 LLM_MODEL = "deepseek-chat"
+
+# ===== 跨会话云端记忆（Cloudflare KV，匿名设备 ID 维度，免费额度） =====
+# 用途：任务快照与创作记忆云备份，跨会话/跨设备恢复（浏览器 localStorage 为本地主数据，KV 为云备份）
+[[kv_namespaces]]
+binding = "STORY_KV"
+id = "fe71b4e2e07546058027daf237a115c3"

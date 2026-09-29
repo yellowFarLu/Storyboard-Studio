@@ -403,6 +403,13 @@ td[contenteditable="true"]:focus {
 .col-camera { min-width: 64px; }
 /* ===== 场景分组统计 ===== */
 .scene-stats { border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; background: rgba(255,255,255,.03); }
+/* ===== 运镜建议（本地规则引擎） ===== */
+.camera-tips { border: 1px solid rgba(56, 189, 248, .25); border-radius: 12px; padding: 10px 14px; margin-bottom: 10px; background: rgba(56, 189, 248, .05); }
+.camera-tips-title { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 8px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.camera-tips-title .badge-ai { font-size: 11px; }
+.camera-tips-list { display: flex; flex-direction: column; gap: 6px; }
+.camera-tip { font-size: 12px; color: var(--ink-2); display: flex; gap: 8px; line-height: 1.55; }
+.camera-tip-no { color: #7dd3fc; font-weight: 700; flex: none; min-width: 30px; }
 .scene-stats-title { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
 .scene-chip { display: inline-block; font-size: 12px; color: var(--ink-2); background: rgba(255,255,255,.05); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; margin: 0 8px 6px 0; }
 

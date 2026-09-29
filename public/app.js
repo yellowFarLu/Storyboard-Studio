@@ -72,6 +72,7 @@
   }
   function saveMemory(list) {
     try { localStorage.setItem(MEMORY_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+    syncPush();
   }
   var memoryList = loadMemory();
 
@@ -92,6 +93,7 @@
   }
   function saveTasks() {
     try { localStorage.setItem(TASKS_KEY, JSON.stringify(tasks.slice(0, MAX_TASKS))); } catch (e) { /* ignore */ }
+    syncPush();
   }
   function createTask(goal, memory) {
     var t = {
@@ -216,19 +218,20 @@
       actions.className = "task-actions";
       var btnView = mkBtn("查看", "btn btn-ghost btn-sm", function () { restoreTask(t.id); });
       var btnCont = null;
-      // 仅未续写过的任务显示（第一幕 8-12 镜；超过视为已续写第二幕）
-      if (t.status === "done" && t.board && t.board.length && t.board.length <= 12) {
-        btnCont = mkBtn("续写第二幕", "btn btn-ghost btn-sm", function () {
+      // 续写下一幕：第一幕(≤12镜)→第二幕；含第二幕(≤24镜)→第三幕；三幕齐全不再显示
+      if (t.status === "done" && t.board && t.board.length && t.board.length <= 24) {
+        var nextAct = t.board.length <= 12 ? "第二幕" : "第三幕";
+        btnCont = mkBtn("续写" + nextAct, "btn btn-ghost btn-sm", function () {
           var self = this;
           if (self.disabled) return;
           self.disabled = true;
           self.textContent = "续写中…";
-          toast("正在基于第一幕续写第二幕分镜…");
+          toast("正在基于已完成分镜续写" + nextAct + "…");
           restoreTask(t.id);
           fetch("/api/agent/continue", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList })
+            body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList, act: nextAct })
           })
           .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
           .then(function (res) {
@@ -236,7 +239,7 @@
               toast("续写失败：" + (res.d.error || ("HTTP " + res.status)), true);
               return;
             }
-            // 追加第二幕镜头到工作台并刷新全部视图
+            // 追加镜头到工作台并刷新全部视图
             state.board = state.board.concat(res.d.shots);
             renderBoard();
             refreshChecksLocal();
@@ -247,13 +250,13 @@
             saveTasks();
             renderTaskList();
             showView("workspace");
-            toast("已续写第二幕 " + res.d.act2Count + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
+            toast("已续写" + nextAct + " " + res.d.actCount + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
           })
           .catch(function (e) {
             toast("续写失败：" + e.message, true);
           })
           .finally(function () {
-            if (btnCont) { btnCont.disabled = false; btnCont.textContent = "续写第二幕"; }
+            if (btnCont) { btnCont.disabled = false; btnCont.textContent = "续写" + nextAct; }
           });
         });
       }
@@ -525,6 +528,30 @@
   }
 
   /* ===== 渲染：分镜 ===== */
+  /* 运镜建议：本地规则引擎（真实可解释，零外部依赖） */
+  function cameraTip(row, i, total) {
+    var a = row.action || "";
+    var d = row.dialogue || "";
+    var tips = [];
+    if (i === 0) tips.push("开场镜：建议「固定/推」快速建立环境或抛出钩子");
+    if (i === total - 1) tips.push("收尾镜：建议「升/拉」拉开空间、收束情绪");
+    if (/(冲|追|跑|逃|扑|撞|打|闪|跳|滚|滑|抓|拦)/.test(a)) tips.push("动作冲突：建议「跟/手持」增强临场感");
+    if (row.scale === "特写" || row.scale === "近景") tips.push("情绪特写：建议「推」放大表情细节");
+    if (row.scale === "远景" || row.scale === "全景") tips.push("环境建立：建议「摇/移」交代空间关系");
+    if (d) tips.push("台词镜：建议「固定」保证口型与字幕可读");
+    if (!tips.length) tips.push("常规叙事镜：建议「固定」");
+    return tips.slice(0, 2).join("；");
+  }
+  function renderCameraTips() {
+    var box = $("camera-tips");
+    if (!state.board.length) { box.classList.add("section-hidden"); return; }
+    box.classList.remove("section-hidden");
+    var total = state.board.length;
+    box.innerHTML = '<div class="camera-tips-title">🎥 运镜建议<span class="badge badge-ai">本地规则引擎</span></div><div class="camera-tips-list">' +
+      state.board.map(function (row, i) {
+        return '<div class="camera-tip"><span class="camera-tip-no">镜' + (i + 1) + '</span><span>' + cameraTip(row, i, total) + '</span></div>';
+      }).join("") + '</div>';
+  }
   function renderBoard() {
     var tbody = $("board-tbody");
     tbody.innerHTML = "";
@@ -533,6 +560,7 @@
     });
     updateTotalDuration();
     renderSceneStats();
+    renderCameraTips();
     boardSection.classList.remove("section-hidden");
     syncBoardView();
   }
@@ -1061,7 +1089,54 @@
     ideaInput.style.height = Math.min(160, Math.max(84, ideaInput.scrollHeight)) + "px";
   });
 
+  /* ===== 跨会话云端记忆（Cloudflare KV · 匿名设备 ID，云备份） ===== */
+  var DEVICE_KEY = "storyboard_device_id";
+  function deviceId() {
+    var id = null;
+    try { id = localStorage.getItem(DEVICE_KEY); } catch (e) {}
+    if (!id) {
+      id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ("dev-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+      try { localStorage.setItem(DEVICE_KEY, id); } catch (e) {}
+    }
+    return id;
+  }
+  var syncTimer = null;
+  function syncPush() {
+    if (syncTimer) clearTimeout(syncTimer);
+    syncTimer = setTimeout(function () {
+      fetch("/api/sync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ device: deviceId(), tasks: tasks.slice(0, MAX_TASKS), memory: memoryList })
+      }).then(function (r) { return r.json(); }).then(function (d) {
+        $("sync-status").textContent = d.ok ? "云端已同步" : "云同步失败";
+      }).catch(function () {
+        $("sync-status").textContent = "云同步不可用";
+      });
+    }, 800);
+  }
+  function syncPull() {
+    fetch("/api/sync?device=" + encodeURIComponent(deviceId()))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok || !d.data) { $("sync-status").textContent = "云端无数据"; return; }
+        var changed = false;
+        // 本地为空且云端有 → 恢复云端（本地为主、云端为备份）
+        if (!tasks.length && d.data.tasks && d.data.tasks.length) {
+          tasks = d.data.tasks.slice(0, MAX_TASKS);
+          saveTasks(); renderTaskList(); changed = true;
+        }
+        if (memoryList.length === 0 && d.data.memory && d.data.memory.length) {
+          memoryList = d.data.memory.slice();
+          saveMemory(memoryList); renderMemory(); changed = true;
+        }
+        $("sync-status").textContent = changed ? "已从云端恢复" : "云端已同步";
+      })
+      .catch(function () { $("sync-status").textContent = "云同步不可用"; });
+  }
+
   // 初始化
   renderMemory();
   restoreLatestOnLoad();
+  syncPull();
 })();
