@@ -14,7 +14,7 @@
  * 安全：与 run.js 一致——仅 POST；JSON；请求体限长；Key 仅存 Secret。
  */
 
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 1024 * 1024; // 前端已对历史分镜做摘要压缩；此处放宽兜底（Pages Functions 请求体上限远高于此）
 const MAX_LOOP_ATTEMPTS = 5; // ReAct 局部循环最大尝试次数：连续 5 次未通过 → 钉钉通知人类介入（Mock）并停止自纠
 const LLM_RETRY_MAX = 2; // 可重试上游错误（5xx/429/网络/超时）的最大重试次数
 const LLM_RETRY_BASE_MS = 500; // 退避基数（500ms → 1000ms 指数退避）
@@ -201,7 +201,7 @@ function actSystem(actName, actNo) {
 }
 
 /* ==================== ReAct 续写第 N 幕（生成 → 规则校验 → 自纠；连续 5 次未通过 → 钉钉通知人类 Mock） ==================== */
-async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText) {
+async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, totalShots, memoryText, extraText) {
   const reactLog = [];
   let shots = null;
   let checks = null;
@@ -210,7 +210,7 @@ async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memor
   let humanNotice = null;
   let attempts = 0;
 
-  const baseUser = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n已完成分镜（前 ${prevBoard.length} 镜，供承接）：\n${JSON.stringify(prevBoard, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${extraText ? `\n用户对${actName}的补充要求：\n${extraText}\n请在分镜中明确体现（场景/人物/情节）。\n` : ""}`;
+  const baseUser = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n全剧已生成 ${totalShots} 镜。以下为前文承接上下文（最近一幕完整 + 前文关键镜头抽样，非全部，注意保持人物/场景/世界观一致）：\n${JSON.stringify(prevBoard, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${extraText ? `\n用户对${actName}的补充要求：\n${extraText}\n请在分镜中明确体现（场景/人物/情节）。\n` : ""}`;
 
   for (let round = 0; round < MAX_LOOP_ATTEMPTS; round++) {
     attempts = round + 1;
@@ -307,9 +307,11 @@ export async function onRequest(context) {
   const extraText = typeof body.extra === "string" ? body.extra.trim() : "";
 
   const prevBoard = normalizeBoard(body.board);
+  // 全剧已生成镜数（前端传入；若未传则用摘要长度兜底——仅影响提示文案与统计口径）
+  const totalShots = Number.isInteger(body.totalShots) && body.totalShots >= prevBoard.length ? body.totalShots : prevBoard.length;
 
   try {
-    const { shots, checks, model, reactLog, fixed, humanNotice } = await genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText);
+    const { shots, checks, model, reactLog, fixed, humanNotice } = await genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, totalShots, memoryText, extraText);
     return new Response(JSON.stringify({
       ok: true,
       act: actName,
@@ -318,8 +320,8 @@ export async function onRequest(context) {
       checks,
       model,
       fixed,
-      totalShots: prevBoard.length + shots.length,
-      prevCount: prevBoard.length,
+      totalShots: totalShots + shots.length,
+      prevCount: totalShots,
       actCount: shots.length,
       reactLog,
       humanNotified: !!humanNotice,

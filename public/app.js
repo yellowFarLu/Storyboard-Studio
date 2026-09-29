@@ -303,6 +303,21 @@
     });
   }
 
+  /* ===== 历史分镜摘要压缩：供续写请求携带（长剧多幕时避免 body 超限 / LLM 上下文膨胀） =====
+     规则：≤24 镜全量；>24 镜时保留最近一幕（12 镜）完整承接 + 前文按步长抽样，总量 ≤ 36 镜 */
+  function compactBoard(board) {
+    var arr = board || [];
+    if (arr.length <= 24) return arr;
+    var recent = arr.slice(-12);
+    var head = arr.slice(0, arr.length - 12);
+    var step = Math.ceil(head.length / 24);
+    var sampled = [];
+    for (var i = 0; i < head.length; i += step) sampled.push(head[i]);
+    // 补上最后一镜前的节点，保证前文结尾衔接
+    if (sampled.length && sampled[sampled.length - 1] !== head[head.length - 1]) sampled.push(head[head.length - 1]);
+    return sampled.concat(recent);
+  }
+
   /* ===== 执行续写请求：成功后追加分镜到工作台并刷新全部视图 ===== */
   function doContinue(t, nextAct, nextActName, extra, btnEl) {
     btnEl.disabled = true;
@@ -312,7 +327,8 @@
     fetch("/api/agent/continue", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList, actNo: nextAct, extra: extra || "" })
+      // 历史分镜摘要压缩（避免长剧多幕时请求体超限/上下文膨胀）：≤24 镜全传，否则最近一幕完整+前文抽样
+      body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: compactBoard(t.board || []), memory: memoryList, actNo: nextAct, extra: extra || "", totalShots: (t.board || []).length })
     })
     .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
     .then(function (res) {
@@ -1281,10 +1297,21 @@
   function syncPush() {
     if (syncTimer) clearTimeout(syncTimer);
     syncTimer = setTimeout(function () {
+      // 瘦身：若全部任务序列化超 400KB，则仅同步元数据 + 最新任务完整内容（其余任务云备份降级为元数据）
+      var all = tasks.slice(0, MAX_TASKS);
+      var full = JSON.stringify({ device: deviceId(), tasks: all, memory: memoryList });
+      var payload = full;
+      if (full.length > 400 * 1024 && all.length) {
+        var meta = all.map(function (t) {
+          return { id: t.id, createdAt: t.createdAt, goal: t.goal, status: t.status, actNo: t.actNo, shotCount: (t.board || []).length, memory: t.memory };
+        });
+        meta[0] = all[0]; // 最新任务保留完整内容（工作台恢复所需）
+        payload = JSON.stringify({ device: deviceId(), tasks: meta, memory: memoryList, slim: true });
+      }
       fetch("/api/sync", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ device: deviceId(), tasks: tasks.slice(0, MAX_TASKS), memory: memoryList })
+        body: payload
       }).then(function (r) { return r.json(); }).then(function (d) {
         $("sync-status").textContent = d.ok ? "云端已同步" : "云同步失败";
       }).catch(function () {
