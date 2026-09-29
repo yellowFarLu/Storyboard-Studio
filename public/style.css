@@ -297,6 +297,34 @@ td[contenteditable="true"]:focus { background: #eaf7f7; box-shadow: inset 0 0 0 
 .scene-stats-title { font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 8px; }
 .scene-chip { display: inline-block; font-size: 12px; color: var(--ink-2); background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; margin: 0 8px 6px 0; }
 
+/* ===== 页面视图导航（创作 / 工作台 / 历史） ===== */
+.topnav { display: flex; gap: 4px; }
+.nav-btn { font-size: 13px; padding: 6px 14px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--ink-2); cursor: pointer; font-weight: 600; }
+.nav-btn:hover { color: var(--ink); background: rgba(0,0,0,.04); }
+.nav-btn.active { background: #fff; border-color: var(--line); color: var(--accent, #2b6de8); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.view { display: block; }
+.view.section-hidden { display: none; }
+
+/* ===== 分镜视图切换（表格 / 卡片 / 脚本预览） ===== */
+.view-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #f5f7fa; }
+.vw-btn { font-size: 12px; padding: 5px 10px; border: none; background: transparent; color: var(--ink-2); cursor: pointer; font-weight: 600; }
+.vw-btn.active { background: #fff; color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+.board-cards-head { font-size: 12px; color: var(--ink-3); margin-bottom: 10px; }
+
+/* ===== 分镜卡片（一镜一卡 · 竖屏拍摄板） ===== */
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.shot-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.05); display: flex; flex-direction: column; gap: 6px; }
+.shot-card-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; border-bottom: 1px dashed var(--line); padding-bottom: 6px; }
+.shot-no { font-size: 12px; font-weight: 800; color: var(--accent, #2b6de8); background: rgba(43,109,232,.08); border-radius: 6px; padding: 2px 7px; }
+.shot-meta { font-size: 11px; color: var(--ink-3); text-align: right; }
+.shot-action { font-size: 13px; color: var(--ink); line-height: 1.55; }
+.shot-dialogue { font-size: 13px; color: #8a4d0f; background: rgba(255,183,77,.12); border-radius: 6px; padding: 4px 8px; }
+.shot-caption { font-size: 12px; color: var(--ink-3); }
+@media (max-width: 560px) {
+  .topnav { position: static; margin-top: 8px; }
+  .card-grid { grid-template-columns: 1fr; }
+}
+
 /* ===== Agent 过程面板 ===== */
 .agent-sub-title { font-size: 14px; font-weight: 700; color: var(--ink-2); margin: 6px 0 10px; }
 .plan-list, .tool-log-list { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }

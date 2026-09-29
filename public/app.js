@@ -235,6 +235,7 @@
     });
   }
   function restoreTask(id) {
+    showView("workspace");
     var t = null;
     for (var i = 0; i < tasks.length; i++) {
       if (tasks[i].id === id) { t = tasks[i]; break; }
@@ -446,7 +447,7 @@
       $("tab-original").classList.remove("active");
     }
     renderBoard();
-    if (previewVisible) renderScriptPreview();
+    syncBoardView();
     refreshChecksLocal();
   }
 
@@ -490,6 +491,7 @@
     updateTotalDuration();
     renderSceneStats();
     boardSection.classList.remove("section-hidden");
+    syncBoardView();
   }
 
   function renderRow(row, idx) {
@@ -603,7 +605,39 @@
   }
 
   /* ===== 渲染：脚本预览（可读剧本视图） ===== */
-  var previewVisible = false;
+  var boardViewMode = "table";
+
+  /* ===== 分镜卡片视图（对标 Boords Grid view / LTX Shot 卡片：一镜一卡，竖屏拍摄板） ===== */
+  function renderBoardCards() {
+    var box = $("board-cards");
+    if (!state.board.length) { box.innerHTML = ""; return; }
+    var html = '<div class="board-cards-head">分镜卡片 · 一镜一卡（竖屏拍摄板，只读；编辑请切回「表格」）</div><div class="card-grid">';
+    state.board.forEach(function (r, i) {
+      html += '<div class="shot-card">';
+      html += '<div class="shot-card-top"><span class="shot-no">镜头 ' + (i + 1) + '</span><span class="shot-meta">' + r.scene + ' · ' + r.scale + ' · ' + (r.camera || "固定") + ' · ' + r.duration + 's</span></div>';
+      if (r.action) html += '<div class="shot-action">' + r.action + '</div>';
+      if (r.dialogue) html += '<div class="shot-dialogue">「' + r.dialogue + '」</div>';
+      if (r.caption) html += '<div class="shot-caption">字幕：' + r.caption + '</div>';
+      html += '</div>';
+    });
+    html += '</div>';
+    box.innerHTML = html;
+  }
+
+  /* ===== 分镜视图切换：表格 / 卡片 / 脚本预览 ===== */
+  function syncBoardView() {
+    var t = $("table-wrap") || document.querySelector(".table-wrap"), c = $("board-cards"), p = $("script-preview");
+    if (t) t.classList.toggle("section-hidden", boardViewMode !== "table");
+    if (c) c.classList.toggle("section-hidden", boardViewMode !== "cards");
+    if (p) p.classList.toggle("section-hidden", boardViewMode !== "preview");
+    document.querySelectorAll(".vw-btn").forEach(function (b) {
+      b.classList.toggle("active", b.id === "btn-view-" + boardViewMode);
+    });
+    if (boardViewMode === "cards") renderBoardCards();
+    if (boardViewMode === "preview") renderScriptPreview();
+  }
+  function setBoardView(mode) { boardViewMode = mode; syncBoardView(); }
+
   function renderScriptPreview() {
     var box = $("script-preview");
     if (!state.board.length) return;
@@ -618,12 +652,16 @@
     });
     box.innerHTML = html;
   }
-  function togglePreview() {
-    previewVisible = !previewVisible;
-    var box = $("script-preview");
-    box.classList.toggle("section-hidden", !previewVisible);
-    $("btn-preview").classList.toggle("active", previewVisible);
-    if (previewVisible) renderScriptPreview();
+  /* 页面视图切换（创作 / 工作台 / 历史） */
+  function showView(v) {
+    ["create", "workspace", "history"].forEach(function (k) {
+      var el = $("view-" + k);
+      if (el) el.classList.toggle("section-hidden", k !== v);
+    });
+    document.querySelectorAll(".nav-btn").forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-view") === v);
+    });
+    window.scrollTo(0, 0);
   }
 
   /* ===== 导出 JSON（供后续拍摄/制作工具接入） ===== */
@@ -753,6 +791,7 @@
     agentPanel.classList.remove("section-hidden");
     $("agent-empty").classList.add("section-hidden");
     btnRun.disabled = true;
+    showView("workspace");
     $("agent-mode-badge").textContent = "运行中";
     $("agent-mode-badge").className = "badge badge-ai";
     setStep(0);
@@ -939,7 +978,7 @@
     state.board.push({ id: state.board.length + 1, scene: "新场景", scale: "中景", action: "输入画面动作…", dialogue: "", caption: "", duration: 5 });
     renderBoard();
     refreshChecksLocal();
-    if (previewVisible) renderScriptPreview();
+    syncBoardView();
   }
 
   /* ===== 模型信息 ===== */
@@ -951,7 +990,12 @@
   btnRun.addEventListener("click", runAgent);
   $("tab-original").addEventListener("click", function () { switchView("original"); });
   $("tab-optimized").addEventListener("click", function () { switchView("optimized"); });
-  $("btn-preview").addEventListener("click", togglePreview);
+  document.querySelectorAll(".nav-btn").forEach(function (b) {
+    b.addEventListener("click", function () { showView(b.getAttribute("data-view")); });
+  });
+  $("btn-view-table").addEventListener("click", function () { setBoardView("table"); });
+  $("btn-view-cards").addEventListener("click", function () { setBoardView("cards"); });
+  $("btn-view-preview").addEventListener("click", function () { setBoardView("preview"); });
   $("btn-export-json").addEventListener("click", exportJson);
   $("btn-export-csv").addEventListener("click", exportCsv);
   $("btn-regen-outline").addEventListener("click", function () {
