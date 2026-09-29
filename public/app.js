@@ -109,6 +109,7 @@
       checks: null,
       reflection: null,
       model: "未连接",
+      actNo: 1, // 已完成幕数（第一幕=1），续写下一幕时 +1
     };
     tasks.unshift(t);
     saveTasks();
@@ -218,20 +219,22 @@
       actions.className = "task-actions";
       var btnView = mkBtn("查看", "btn btn-ghost btn-sm", function () { restoreTask(t.id); });
       var btnCont = null;
-      // 续写下一幕：第一幕(≤12镜)→第二幕；含第二幕(≤24镜)→第三幕；三幕齐全不再显示
-      if (t.status === "done" && t.board && t.board.length && t.board.length <= 24) {
-        var nextAct = t.board.length <= 12 ? "第二幕" : "第三幕";
-        btnCont = mkBtn("续写" + nextAct, "btn btn-ghost btn-sm", function () {
+      // 无限续写：只要已完成且含分镜，即可续写下一幕（第 N 幕；N 按任务已续写幕数或镜头数估算）
+      if (t.status === "done" && t.board && t.board.length) {
+        var curAct = t.actNo || Math.max(1, Math.ceil(t.board.length / 12));
+        var nextAct = curAct + 1;
+        var nextActName = "第" + nextAct + "幕";
+        btnCont = mkBtn("续写" + nextActName, "btn btn-ghost btn-sm", function () {
           var self = this;
           if (self.disabled) return;
           self.disabled = true;
           self.textContent = "续写中…";
-          toast("正在基于已完成分镜续写" + nextAct + "…");
+          toast("正在基于已完成分镜续写" + nextActName + "…");
           restoreTask(t.id);
           fetch("/api/agent/continue", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList, act: nextAct })
+            body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList, actNo: nextAct })
           })
           .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
           .then(function (res) {
@@ -243,20 +246,20 @@
             state.board = state.board.concat(res.d.shots);
             renderBoard();
             refreshChecksLocal();
-            // 写回任务并刷新历史列表
+            // 写回任务（含已完成幕数）并刷新历史列表
             for (var k = 0; k < tasks.length; k++) {
-              if (tasks[k].id === t.id) { tasks[k].board = state.board; tasks[k].checks = state.checks; break; }
+              if (tasks[k].id === t.id) { tasks[k].board = state.board; tasks[k].checks = state.checks; tasks[k].actNo = res.d.actNo; break; }
             }
             saveTasks();
             renderTaskList();
             showView("workspace");
-            toast("已续写" + nextAct + " " + res.d.actCount + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
+            toast("已续写" + res.d.act + " " + res.d.actCount + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
           })
           .catch(function (e) {
             toast("续写失败：" + e.message, true);
           })
           .finally(function () {
-            if (btnCont) { btnCont.disabled = false; btnCont.textContent = "续写" + nextAct; }
+            if (btnCont) { btnCont.disabled = false; btnCont.textContent = "续写" + nextActName; }
           });
         });
       }
