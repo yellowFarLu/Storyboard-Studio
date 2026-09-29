@@ -66,6 +66,56 @@
   }
   var memoryList = loadMemory();
 
+  /* ===== 任务历史（localStorage 本地持久化，刷新可恢复） ===== */
+  var TASKS_KEY = "storyboard_tasks_v1";
+  var MAX_TASKS = 10;
+  var tasks = [];
+  var currentTaskId = null;
+  function loadTasks() {
+    try {
+      var raw = localStorage.getItem(TASKS_KEY);
+      tasks = raw ? JSON.parse(raw) : [];
+    } catch (e) { tasks = []; }
+  }
+  function saveTasks() {
+    try { localStorage.setItem(TASKS_KEY, JSON.stringify(tasks.slice(0, MAX_TASKS))); } catch (e) { /* ignore */ }
+  }
+  function createTask(goal, memory) {
+    var t = {
+      id: String(Date.now()),
+      createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+      goal: goal,
+      memory: memory.slice(),
+      status: "running", // running / done / failed / interrupted
+      plan: [],
+      toolLogs: [],
+      outline: null,
+      board: [],
+      checks: null,
+      reflection: null,
+      model: "未连接",
+    };
+    tasks.unshift(t);
+    saveTasks();
+    return t;
+  }
+  function snapshotTask() {
+    if (!currentTaskId) return;
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id !== currentTaskId) continue;
+      var t = tasks[i];
+      t.plan = state.plan;
+      t.toolLogs = state.toolLogs;
+      t.outline = state.outline;
+      t.board = state.board;
+      t.checks = state.checks;
+      t.reflection = state.reflection;
+      t.model = state.model;
+      saveTasks();
+      return;
+    }
+  }
+
   function renderMemory() {
     var box = $("memory-tags");
     box.innerHTML = "";
@@ -100,6 +150,115 @@
     $("memory-input").value = "";
     renderMemory();
     toast("已添加创作记忆");
+  }
+
+  /* ===== 任务历史：渲染与操作 ===== */
+  function taskStatusBadge(t) {
+    if (t.status === "done") return { cls: "badge-ok", text: "已完成" };
+    if (t.status === "failed") return { cls: "badge-mock", text: "失败" };
+    if (t.status === "interrupted") return { cls: "badge-warn", text: "已中断" };
+    return { cls: "badge-ai", text: "运行中" };
+  }
+  function mkBtn(label, cls, fn) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    return b;
+  }
+  function renderTaskList() {
+    var box = $("task-history-box");
+    if (!tasks.length) { box.style.display = "none"; return; }
+    box.style.display = "";
+    var listEl = $("task-list");
+    listEl.innerHTML = "";
+    tasks.forEach(function (t) {
+      var item = document.createElement("div");
+      item.className = "task-item";
+      var main = document.createElement("div");
+      main.className = "task-main";
+      var b = taskStatusBadge(t);
+      var badge = document.createElement("span");
+      badge.className = "badge " + b.cls;
+      badge.textContent = b.text;
+      var goal = document.createElement("span");
+      goal.className = "task-goal";
+      goal.title = t.goal;
+      goal.textContent = t.goal.length > 34 ? t.goal.slice(0, 34) + "…" : t.goal;
+      main.appendChild(badge);
+      main.appendChild(goal);
+      var meta = document.createElement("div");
+      meta.className = "task-meta";
+      var metaParts = [t.createdAt];
+      if (t.board && t.board.length) metaParts.push(t.board.length + " 镜头");
+      if (t.reflection && t.reflection.score) metaParts.push("评审 " + t.reflection.score + "/100");
+      meta.textContent = metaParts.join(" · ");
+      var actions = document.createElement("div");
+      actions.className = "task-actions";
+      var btnView = mkBtn("查看", "btn btn-ghost btn-sm", function () { restoreTask(t.id); });
+      var btnRegen = mkBtn("重新生成", "btn btn-ghost btn-sm", function () {
+        ideaInput.value = t.goal;
+        runAgent();
+      });
+      var btnDel = mkBtn("删除", "btn btn-ghost btn-sm", function () {
+        tasks = tasks.filter(function (x) { return x.id !== t.id; });
+        saveTasks();
+        renderTaskList();
+        toast("已删除任务");
+      });
+      actions.appendChild(btnView);
+      actions.appendChild(btnRegen);
+      actions.appendChild(btnDel);
+      item.appendChild(main);
+      item.appendChild(meta);
+      item.appendChild(actions);
+      listEl.appendChild(item);
+    });
+  }
+  function restoreTask(id) {
+    var t = null;
+    for (var i = 0; i < tasks.length; i++) {
+      if (tasks[i].id === id) { t = tasks[i]; break; }
+    }
+    if (!t) return;
+    state.goal = t.goal || "";
+    state.outline = t.outline || null;
+    state.board = t.board || [];
+    state.checks = t.checks || null;
+    state.reflection = t.reflection || null;
+    state.plan = t.plan || [];
+    state.toolLogs = t.toolLogs || [];
+    state.model = t.model || "未连接";
+    ideaInput.value = state.goal;
+    agentPanel.classList.remove("section-hidden");
+    if (state.plan.length) renderPlan();
+    if (state.toolLogs.length) renderToolLog();
+    if (state.outline) renderOutline();
+    if (state.board.length) { renderBoard(); renderCheckReport(); }
+    if (state.reflection) renderReflect();
+    if (state.board.length || state.outline) {
+      var bd = taskStatusBadge(t);
+      $("agent-mode-badge").textContent = "已恢复·" + bd.text;
+      $("agent-mode-badge").className = "badge " + bd.cls;
+    } else {
+      $("agent-mode-badge").textContent = "已恢复（任务未完成）";
+      $("agent-mode-badge").className = "badge badge-warn";
+    }
+    toast("已恢复任务：" + (t.goal.length > 24 ? t.goal.slice(0, 24) + "…" : t.goal));
+  }
+  function restoreLatestOnLoad() {
+    loadTasks();
+    renderTaskList();
+    if (!tasks.length) return;
+    var latest = tasks[0];
+    if (latest.status === "running") {
+      latest.status = "interrupted";
+      saveTasks();
+      renderTaskList();
+      toast("检测到上次运行中断，已恢复已生成内容；如需继续可点「重新生成」", true);
+    }
+    restoreTask(latest.id);
   }
 
   /* ===== Agent 步骤条 ===== */
@@ -337,6 +496,11 @@
     state.toolLogs = [];
     state.running = true;
 
+    // 创建任务记录（刷新可恢复）
+    var task = createTask(goal, memoryList);
+    currentTaskId = task.id;
+    renderTaskList();
+
     // 清空旧结果
     outlineSection.classList.add("section-hidden");
     boardSection.classList.add("section-hidden");
@@ -374,6 +538,14 @@
     }).finally(function () {
       state.running = false;
       btnRun.disabled = false;
+      // 若未收到 done/error（连接中断等），标记为已中断
+      for (var i = 0; i < tasks.length; i++) {
+        if (tasks[i].id === currentTaskId && tasks[i].status === "running") {
+          tasks[i].status = "interrupted";
+        }
+      }
+      snapshotTask();
+      renderTaskList();
       updateModelInfo();
     });
   }
@@ -401,11 +573,14 @@
           setStep(0);
           if (obj.adjusted) toast("Agent 修正了步骤顺序（大纲必须先于分镜）");
           if (obj.fallback) toast("规划器未返回，Agent 使用默认计划");
+          snapshotTask();
         } else if (obj.step === "observe") {
           if (obj.tool === "gen_outline" && obj.status === "done") setStep(1);
           if (obj.tool === "gen_board" && obj.status === "done") setStep(2);
+          if (obj.status === "done") snapshotTask();
         } else if (obj.step === "reflect" && obj.reflection) {
           state.reflection = obj.reflection;
+          snapshotTask();
         }
       } else if (event === "done") {
         state.plan = obj.plan || state.plan;
@@ -421,9 +596,19 @@
         renderBoard();
         renderCheckReport();
         renderReflect();
+        for (var i = 0; i < tasks.length; i++) {
+          if (tasks[i].id === currentTaskId) tasks[i].status = "done";
+        }
+        snapshotTask();
+        renderTaskList();
       } else if (event === "error") {
         state.toolLogs.push({ tool: "agent", status: "failed", summary: obj.message || "未知错误" });
         renderToolLog();
+        for (var j = 0; j < tasks.length; j++) {
+          if (tasks[j].id === currentTaskId) tasks[j].status = "failed";
+        }
+        snapshotTask();
+        renderTaskList();
         throw new Error(obj.message || "Agent 执行失败");
       }
     }
@@ -519,4 +704,5 @@
 
   // 初始化
   renderMemory();
+  restoreLatestOnLoad();
 })();

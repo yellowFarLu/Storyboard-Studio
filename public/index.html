@@ -49,6 +49,15 @@
         </div>
       </div>
 
+      <!-- 任务历史 -->
+      <div class="memory-box task-box" id="task-history-box" style="display:none">
+        <div class="memory-head">
+          <span class="memory-title">📋 任务历史</span>
+          <span class="memory-hint">最近任务与产出保存在本机（localStorage），刷新页面可恢复查看</span>
+        </div>
+        <div class="task-list" id="task-list"></div>
+      </div>
+
       <div class="steps" aria-label="Agent 工作流程">
         <div class="step active"><span class="step-num">P</span><span>规划 Plan</span></div>
         <div class="step-line"></div>
@@ -147,6 +156,7 @@
         <li><strong>PERO 循环：</strong>Plan（LLM 规划步骤）→ Execute（逐步执行）→ Observe（过程可见）→ Reflect（LLM 质量评审），全部真实运行。</li>
         <li><strong>工具调用：</strong>「题材热度查询」「素材搜索」为 <strong>Mock（内置示例数据，未接真实数据源）</strong>；「分镜结构检查」为本地规则引擎真实执行；「大纲/分镜生成」为真实大模型（DeepSeek）。</li>
         <li><strong>记忆：</strong>创作偏好存于浏览器 localStorage，为<strong>本地模拟长期记忆</strong>（未接数据库/向量记忆），注入规划与生成 Prompt。</li>
+        <li><strong>任务历史：</strong>最近任务与产出存于浏览器 localStorage，刷新可恢复查看（服务端无任务队列，执行中断需点击「重新生成」续跑）。</li>
         <li><strong>未完成：</strong>第二/三幕分镜、真实素材检索、跨会话云端记忆、图片/视频预览。</li>
       </ul>
     </section>
