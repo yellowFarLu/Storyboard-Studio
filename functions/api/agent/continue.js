@@ -233,7 +233,12 @@ async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memor
       if (attempts >= MAX_LOOP_ATTEMPTS) {
         humanNotice = notifyHuman(env, { tool: "gen_act" + actNo, attempts, reason: e.message, goal });
         reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
-        throw e;
+        // 把熔断信息与轨迹挂到错误上，随错误响应返回给前端
+        const err = new Error(e.message);
+        err.humanNotice = humanNotice;
+        err.reactLog = reactLog;
+        err.humanNotified = true;
+        throw err;
       }
       continue; // 解析失败 → 下一轮自纠（prompt 提示严格输出 JSON）
     }
@@ -323,7 +328,14 @@ export async function onRequest(context) {
   } catch (e) {
     const cls = e.classified || classifyError(e);
     const statusMap = { config: 502, upstream: 502, network: 502, quota: 429, invalid_request: 400, model_output: 500, unknown: 500 };
-    return new Response(JSON.stringify({ ok: false, error: e.message, classified: cls }), {
+    return new Response(JSON.stringify({
+      ok: false,
+      error: e.message,
+      classified: cls,
+      humanNotified: !!(e.humanNotice) || e.humanNotified,
+      humanNotice: e.humanNotice || null,
+      reactLog: e.reactLog || null,
+    }), {
       status: statusMap[cls.category] || 500,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
