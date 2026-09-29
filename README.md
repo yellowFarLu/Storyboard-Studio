@@ -13,6 +13,22 @@
 
 短剧/短视频创作者写分镜耗时且缺少结构化工具。分镜工坊把"从创意到分镜"交给一个 AI Agent：输入一句话创作目标，Agent 自主规划（Plan）、分步执行（Execute，含工具调用）、观察结果（Observe）、反思自评（Reflect），产出可编辑的三幕大纲与第一幕逐镜分镜脚本，从 0 到 1 快速验证一个故事是否"值得拍"。
 
+## 问题定义与关键选择
+
+**目标用户**：个人/小团队的短剧与竖屏短视频创作者（短剧是目前平台补贴与广告变现的热点赛道）。
+
+**核心问题**：从"一句话点子"到"可开拍的分镜表"是全流程最耗时、最缺工具的环节——既要故事结构（三幕、反转），又要拍摄语言（镜头、景别、时长、字幕）。多数人靠纯手写或套模板，缺乏结构与节奏校验。
+
+**关键选择（取舍记录）**：
+
+| 选择 | 为什么这样选 | 放弃了什么 |
+|---|---|---|
+| 短剧分镜方向 | 热点赛道、产出结构化（表格）、一条路径可在笔试时限内走通 | 动画/漫画/互动叙事（需要额外生成能力） |
+| Agent 形态（PERO） | 体现 AI 的规划与反思能力，过程可见、可被追问，贴合"AI 如何参与产品"考察点 | 单次"点子→分镜"直出（更快但无过程价值） |
+| 纯前端 + Cloudflare Pages Functions | 0 服务器成本、免备案、密钥存 Secret 不进前端与仓库 | 自建后端（维护、备案成本） |
+| 第一幕分镜 | 完整走通"一条重要用户路径"，文档明确"不需要成片" | 二、三幕分镜、画面预览（列入下一步） |
+| 工具 Mock | 笔试时限内无真实数据源凭据；按文档要求如实标注 | 真实搜索/热度 API（列入下一步） |
+
 ## Agent 能力（PERO 架构）
 
 ```
@@ -70,6 +86,19 @@ Cloudflare Pages Function（functions/api/agent/run.js）
 - 前端：原生 HTML/CSS/JavaScript，单页应用，无构建步骤；fetch + ReadableStream 手工解析 SSE 帧
 - 后端：Cloudflare Pages Functions（Workers 运行时），API Key 存放于 Secret 环境变量（`LLM_API_KEY`），**前端不暴露密钥**
 - 部署：Cloudflare Pages（一个项目同时承载静态站点与 Functions）
+
+## 技术选型与版本（已核实）
+
+| 组件 | 选型 | 版本/依据 |
+|---|---|---|
+| 运行时 | Node.js | 22.23.2（本机实测） |
+| 包管理 | npm | 10.9.8（本机实测） |
+| 部署工具 | wrangler（Cloudflare CLI） | 4.142.0（npm 安装） |
+| 托管 | Cloudflare Pages + Pages Functions | 项目 storyboard-studio-2026，production branch=main |
+| 大模型 | DeepSeek deepseek-chat | OpenAI 兼容接口，`LLM_API_BASE=https://api.deepseek.com/v1` |
+| 前端 | 原生 HTML/CSS/JS 单页 | 零构建依赖 |
+
+> 结构与节奏参数（镜头数 8-12、单集时长 60-90s、每镜 3-8s、景别白名单、纯画面镜头占比阈值等）全部集中在 `functions/api/agent/run.js` 顶部常量与系统提示中，可调参数便于实验，不散落各处。
 
 ## 目录结构
 
@@ -149,6 +178,29 @@ LLM_MODEL = "deepseek-chat"
 3. 跨会话云端记忆（接入向量存储，实现"记得用户所有历史创作"）
 4. 分镜脚本的图片/视频预览与运镜建议
 5. Agent 反思后的自动迭代优化（Reflexion 闭环）
+
+## 验证记录（本地 + 线上实测）
+
+**本地（localhost:8788）：**
+
+- 首页 HTTP 200；Agent 全流程 SSE 事件序列完整：`plan → lookup_trend → search_materials → gen_outline → gen_board → check_structure → reflect → done`
+- 示例"菜市场卖鱼的姑娘其实是隐退的顶级大厨，前东家来踢馆"：真实生成 12 镜头分镜，结构检查发现 1 项问题（总时长 51s 低于 60s 下限），LLM 质量评审 72/100（含具体优点/问题/改进建议）
+- 示例"便利贴"题材：真实生成 12 镜头分镜 + 结构检查 1 项问题 + 真实评审成功
+- 记忆注入生效：`memoryUsed:["喜欢强反转结局"]` 出现在最终事件
+
+**线上（https://storyboard-studio-2026.pages.dev）：**
+
+- 首页 HTTP 200（约 7.9KB）；`POST /api/agent/run` 返回 `text/event-stream`，完整 15 个事件、真实模型生成大纲与 12 镜头分镜
+- 部署修正记录：Pages Functions 路由 = 函数文件路径（`functions/api/agent/run.js` ↔ `/api/agent/run`）；非交互终端部署需 `script -q /dev/null` 包装；需 `--branch main` 才绑定生产环境
+
+## 风险与降级（如实说明）
+
+1. **模型输出稳定性**：DeepSeek 输出偶发不合法 JSON，已实现 `parseJsonLoose` 清洗（代码块剥离/截取首个 JSON）与字段兜底
+2. **LLM 规划失败**：规划解析失败时自动回退默认计划（题材→素材→大纲→分镜→检查），依赖修正逻辑保证大纲先于分镜
+3. **LLM 接口异常**：任一步骤失败时 SSE 推送 `error` 事件并在前端明确提示，不静默降级
+4. **反思失败兜底**：Reflect 异常时返回结构化空壳（score:null + 提示语），不影响已生成的大纲/分镜
+5. **请求限制**：请求体上限 64KB、超时 100s，防止异常输入打爆资源
+6. **Mock 边界**：题材热度/素材搜索为内置示例数据；本地记忆为 localStorage 模拟——均已在前端、本文档、代码注释三处一致标注
 
 ## AI 参与开发说明
 
