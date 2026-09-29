@@ -196,6 +196,19 @@ LLM_MODEL = "deepseek-chat"
 - 首页 HTTP 200（约 7.9KB）；`POST /api/agent/run` 返回 `text/event-stream`，完整 15 个事件、真实模型生成大纲与 12 镜头分镜
 - 部署修正记录：Pages Functions 路由 = 函数文件路径（`functions/api/agent/run.js` ↔ `/api/agent/run`）；非交互终端部署需 `script -q /dev/null` 包装；需 `--branch main` 才绑定生产环境
 
+## 测试记录（正向/逆向用例，本地 + 线上实测）
+
+**正向（通过）：** 完整 Agent 流程、表格合法编辑、增删镜头、导出 .md、Cmd+Enter 快捷触发、刷新后任务恢复、任务历史查看/删除/重新生成、运行中断标记。
+
+**逆向（通过）：** 空输入/短输入拦截、运行中防并发提交、非法时长（1-10s 校验回退）、非法景别（白名单回退）、重复/空记忆拦截、空分镜导出提示、localStorage 损坏自动清理恢复、请求体超限 413、空 body/非法 JSON/goal 缺失均 400。
+
+**发现并修复的问题：**
+
+1. API 非 POST 请求（GET）原先因 SPA 回退返回 200 HTML —— 已为 `/api/agent/run` 与 `/api/generate` 增加 `onRequest` 拦截，统一返回 405 JSON（本地+线上已验证）
+2. localStorage 写入损坏数据时虽被 try/catch 兜底但不清理 —— 已加固为解析失败自动写回合法默认值，避免反复失败
+
+> 说明：复制 Markdown 在自动化测试环境因无用户手势被剪贴板 API 拒绝（权限 granted），代码有失败兜底提示；导出 .md 共用同一 Markdown 生成函数已验证通过。
+
 ## 风险与降级（如实说明）
 
 1. **模型输出稳定性**：DeepSeek 输出偶发不合法 JSON，已实现 `parseJsonLoose` 清洗（代码块剥离/截取首个 JSON）与字段兜底
