@@ -454,13 +454,16 @@
     ideaInput.value = state.goal;
     agentPanel.classList.remove("section-hidden");
     $("agent-empty").classList.add("section-hidden");
-    if (state.plan.length) renderPlan();
-    if (state.toolLogs.length) renderToolLog();
-    if (state.reactLogs && Object.keys(state.reactLogs).length) renderReactLog();
-    if (state.outline) renderOutline();
+    // 表格/核心内容先行渲染，过程痕迹（规划/日志/ReAct/大纲/反思/优化）异步分批补充，避免大任务恢复时一次性全渲染阻塞
     if (state.board.length) { boardPage = 999999; renderBoard(); renderCheckReport(); }
-    if (state.reflection) renderReflect();
-    renderOptimize();
+    setTimeout(function () {
+      if (state.plan.length) renderPlan();
+      if (state.toolLogs.length) renderToolLog();
+      if (state.reactLogs && Object.keys(state.reactLogs).length) renderReactLog();
+      if (state.outline) renderOutline();
+      if (state.reflection) renderReflect();
+      renderOptimize();
+    }, 0);
     if (state.board.length || state.outline) {
       var bd = taskStatusBadge(t);
       $("agent-mode-badge").textContent = "已恢复·" + bd.text;
@@ -1378,11 +1381,12 @@
   function syncPush() {
     if (syncTimer) clearTimeout(syncTimer);
     syncTimer = setTimeout(function () {
-      // 瘦身：若全部任务序列化超 400KB，则仅同步元数据 + 最新任务完整内容（其余任务云备份降级为元数据）
+      // 瘦身：若全部任务序列化超 64KB，则仅同步元数据 + 最新任务完整内容（其余任务云备份降级为元数据）
+      // —— 长剧多幕 + 多任务时本地数据可达数百 KB，全量上传会显著拖慢页面；元数据+最新任务完整可保证工作台恢复与历史列表
       var all = tasks.slice(0, MAX_TASKS);
       var full = JSON.stringify({ device: deviceId(), tasks: all, memory: memoryList });
       var payload = full;
-      if (full.length > 400 * 1024 && all.length) {
+      if (full.length > 64 * 1024 && all.length) {
         var meta = all.map(function (t) {
           return { id: t.id, createdAt: t.createdAt, goal: t.goal, status: t.status, actNo: t.actNo, shotCount: (t.board || []).length, memory: t.memory };
         });
@@ -1420,8 +1424,10 @@
       .catch(function () { $("sync-status").textContent = "云同步不可用"; });
   }
 
-  // 初始化
+  // 初始化：先渲染界面（首屏），任务恢复与云端拉取延迟到 load 后，避免大数据任务阻塞首屏
   renderMemory();
-  restoreLatestOnLoad();
-  syncPull();
+  setTimeout(function () {
+    restoreLatestOnLoad();
+    syncPull();
+  }, 50);
 })();
