@@ -652,9 +652,9 @@
     });
     box.innerHTML = html;
   }
-  /* 页面视图切换（创作 / 工作台 / 历史） */
+  /* 页面视图切换（创作 / 工作台 / 历史 / 关于） */
   function showView(v) {
-    ["create", "workspace", "history"].forEach(function (k) {
+    ["create", "workspace", "history", "about"].forEach(function (k) {
       var el = $("view-" + k);
       if (el) el.classList.toggle("section-hidden", k !== v);
     });
