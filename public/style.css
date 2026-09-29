@@ -339,7 +339,7 @@ td[contenteditable="true"]:focus {
 
 /* ===== 任务历史 ===== */
 .task-box { margin-top: 14px; }
-.task-list { display: flex; flex-direction: column; gap: 10px; max-height: 460px; overflow-y: auto; }
+.task-list { display: flex; flex-direction: column; gap: 10px; max-height: min(calc(100vh - 230px), 760px); overflow-y: auto; }
 .task-item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: rgba(255,255,255,.04); transition: all .15s; }
 .task-item:hover { border-color: rgba(45, 212, 191, .4); box-shadow: var(--glow); }
 .task-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
