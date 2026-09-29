@@ -15,7 +15,70 @@
  */
 
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_FIX_ROUNDS = 1;
+const MAX_LOOP_ATTEMPTS = 5; // ReAct 局部循环最大尝试次数：连续 5 次未通过 → 钉钉通知人类介入（Mock）并停止自纠
+const LLM_RETRY_MAX = 2; // 可重试上游错误（5xx/429/网络/超时）的最大重试次数
+const LLM_RETRY_BASE_MS = 500; // 退避基数（500ms → 1000ms 指数退避）
+
+/** 错误分级：识别可重试（transient）与不可重试（permanent）错误（与 run.js 同规则） */
+function classifyError(e) {
+  const msg = ((e && e.message) || String(e));
+  const m = msg.match(/\((\d{3})\)/);
+  const status = m ? Number(m[1]) : 0;
+
+  if (/未配置 LLM_API_KEY/.test(msg)) {
+    return { retryable: false, category: "config", reason: "缺少模型密钥（LLM_API_KEY），属配置错误，不可重试" };
+  }
+  if (/模型服务错误/.test(msg)) {
+    if (status >= 500) return { retryable: true, category: "upstream", reason: `模型服务 ${status}，属上游临时故障，可退避重试` };
+    if (status === 429) return { retryable: true, category: "quota", reason: "模型限流(429)，可退避重试" };
+    return { retryable: false, category: "invalid_request", reason: `模型拒绝请求(${status})，属请求/配置问题，不可重试` };
+  }
+  if (/模型未返回内容/.test(msg)) {
+    return { retryable: true, category: "upstream", reason: "模型未返回内容，可重试" };
+  }
+  if (/超时|timed ?out|ETIMEDOUT|ECONNRESET|fetch failed|网络/.test(msg)) {
+    return { retryable: true, category: "network", reason: "网络超时/连接中断，可重试" };
+  }
+  if (/模型输出中未找到有效 JSON|不是合法 JSON|模型返回为空|分镜数据格式错误/.test(msg)) {
+    return { retryable: true, category: "model_output", reason: "模型输出格式异常，可通过 ReAct 自纠重试" };
+  }
+  return { retryable: false, category: "unknown", reason: msg.slice(0, 80) };
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+/** 带分级重试的 LLM 调用（与 run.js 同策略） */
+async function callLLMWithRetry(env, messages, temperature = 0.7) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= LLM_RETRY_MAX; attempt++) {
+    try {
+      return await callLLM(env, messages, temperature);
+    } catch (e) {
+      const cls = classifyError(e);
+      e.classified = cls;
+      lastErr = e;
+      if (!cls.retryable || attempt >= LLM_RETRY_MAX) throw e;
+      await sleep(LLM_RETRY_BASE_MS * Math.pow(2, attempt));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * 钉钉通知人类（Mock）：生产环境可替换为真实钉钉机器人 Webhook（Secret: DINGTALK_WEBHOOK）。
+ * 当前为 Mock——仅记录通知负载并返回，不真实发送 HTTP 请求（边界如实标注）。
+ */
+function notifyHuman(env, info) {
+  return {
+    channel: "dingtalk-mock",
+    webhook: "mock://dingtalk-robot",
+    notified: true,
+    at: new Date().toISOString(),
+    title: "【分镜工坊】Agent 需要人类介入",
+    text: `任务目标：${info.goal}\n节点：${info.tool}\nReAct 局部循环已连续 ${info.attempts} 次未通过（${info.reason}）\n（Mock 通知，未真实发送）`,
+    mock: true,
+  };
+}
 
 /* ==================== LLM 调用（与 run.js 同实现） ==================== */
 async function callLLM(env, messages, temperature = 0.7) {
@@ -137,17 +200,20 @@ function actSystem(actName, actNo) {
 [{"scene":"场景","scale":"景别","camera":"运镜","action":"画面动作描述","dialogue":"台词（无则空串）","caption":"字幕建议","duration":5}]`;
 }
 
-/* ==================== ReAct 续写第 N 幕（生成 → 规则校验 → 自纠最多 1 轮；JSON 解析失败也走自纠） ==================== */
+/* ==================== ReAct 续写第 N 幕（生成 → 规则校验 → 自纠；连续 5 次未通过 → 钉钉通知人类 Mock） ==================== */
 async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText) {
   const reactLog = [];
   let shots = null;
   let checks = null;
   let model = "";
   let lastJsonError = null;
+  let humanNotice = null;
+  let attempts = 0;
 
   const baseUser = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n已完成分镜（前 ${prevBoard.length} 镜，供承接）：\n${JSON.stringify(prevBoard, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${extraText ? `\n用户对${actName}的补充要求：\n${extraText}\n请在分镜中明确体现（场景/人物/情节）。\n` : ""}`;
 
-  for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
+  for (let round = 0; round < MAX_LOOP_ATTEMPTS; round++) {
+    attempts = round + 1;
     const isFix = round > 0;
     let fixHint = "";
     if (isFix && lastJsonError) {
@@ -156,7 +222,7 @@ async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memor
       fixHint = `上一版${actName}分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整${actName}分镜 JSON 数组。`;
     }
     const user = baseUser + (fixHint ? `\n${fixHint}` : `\n请为${actName}输出分镜脚本 JSON 数组。`);
-    const llmOut = await callLLM(env, [{ role: "system", content: actSystem(actName, actNo) }, { role: "user", content: user }], 0.8);
+    const llmOut = await callLLMWithRetry(env, [{ role: "system", content: actSystem(actName, actNo) }, { role: "user", content: user }], 0.8);
     model = llmOut.model;
     try {
       shots = normalizeBoard(parseJsonLoose(llmOut.content));
@@ -164,7 +230,11 @@ async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memor
     } catch (e) {
       lastJsonError = e.message;
       reactLog.push({ round, jsonError: e.message });
-      if (round >= MAX_FIX_ROUNDS) throw e;
+      if (attempts >= MAX_LOOP_ATTEMPTS) {
+        humanNotice = notifyHuman(env, { tool: "gen_act" + actNo, attempts, reason: e.message, goal });
+        reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
+        throw e;
+      }
       continue; // 解析失败 → 下一轮自纠（prompt 提示严格输出 JSON）
     }
 
@@ -172,9 +242,16 @@ async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memor
     checks = checkStructure(shots);
     reactLog.push({ round, issues: checks.issues.length });
     if (checks.passed) break;
+
+    // 连续 5 次仍未通过 → 通知人类并停止（best-effort 交付当前结果）
+    if (attempts >= MAX_LOOP_ATTEMPTS) {
+      humanNotice = notifyHuman(env, { tool: "gen_act" + actNo, attempts, reason: checks.issues[0], goal });
+      reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
+      break;
+    }
   }
 
-  return { shots, checks, model, reactLog, fixed: reactLog.length > 1 };
+  return { shots, checks, model, reactLog, fixed: reactLog.some((r) => r.round > 0 && r.issues), humanNotice };
 }
 
 /* ==================== 入口 ==================== */
@@ -227,7 +304,7 @@ export async function onRequest(context) {
   const prevBoard = normalizeBoard(body.board);
 
   try {
-    const { shots, checks, model, reactLog, fixed } = await genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText);
+    const { shots, checks, model, reactLog, fixed, humanNotice } = await genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText);
     return new Response(JSON.stringify({
       ok: true,
       act: actName,
@@ -240,11 +317,14 @@ export async function onRequest(context) {
       prevCount: prevBoard.length,
       actCount: shots.length,
       reactLog,
+      humanNotified: !!humanNotice,
+      humanNotice: humanNotice || null,
     }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } });
   } catch (e) {
-    const isModelError = /模型服务错误|模型未返回|未配置/.test(e.message);
-    return new Response(JSON.stringify({ ok: false, error: e.message }), {
-      status: isModelError ? 502 : 500,
+    const cls = e.classified || classifyError(e);
+    const statusMap = { config: 502, upstream: 502, network: 502, quota: 429, invalid_request: 400, model_output: 500, unknown: 500 };
+    return new Response(JSON.stringify({ ok: false, error: e.message, classified: cls }), {
+      status: statusMap[cls.category] || 500,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
   }

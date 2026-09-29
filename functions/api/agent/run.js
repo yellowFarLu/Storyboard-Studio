@@ -25,7 +25,72 @@
  */
 
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_FIX_ROUNDS = 1; // 生成节点 ReAct 自纠最大轮数
+const MAX_FIX_ROUNDS = 1; // 生成节点 ReAct 自纠最大轮数（兼容旧逻辑占位，实际循环见 MAX_LOOP_ATTEMPTS）
+const MAX_LOOP_ATTEMPTS = 5; // ReAct 局部循环最大尝试次数：连续 5 次未通过 → 钉钉通知人类介入（Mock）并停止自纠
+const LLM_RETRY_MAX = 2; // 可重试上游错误（5xx/429/网络/超时）的最大重试次数
+const LLM_RETRY_BASE_MS = 500; // 退避基数（500ms → 1000ms 指数退避）
+
+/** 错误分级：识别可重试（transient）与不可重试（permanent）错误 */
+function classifyError(e) {
+  const msg = ((e && e.message) || String(e));
+  const m = msg.match(/\((\d{3})\)/);
+  const status = m ? Number(m[1]) : 0;
+
+  if (/未配置 LLM_API_KEY/.test(msg)) {
+    return { retryable: false, category: "config", reason: "缺少模型密钥（LLM_API_KEY），属配置错误，不可重试" };
+  }
+  if (/模型服务错误/.test(msg)) {
+    if (status >= 500) return { retryable: true, category: "upstream", reason: `模型服务 ${status}，属上游临时故障，可退避重试` };
+    if (status === 429) return { retryable: true, category: "quota", reason: "模型限流(429)，可退避重试" };
+    return { retryable: false, category: "invalid_request", reason: `模型拒绝请求(${status})，属请求/配置问题，不可重试` };
+  }
+  if (/模型未返回内容/.test(msg)) {
+    return { retryable: true, category: "upstream", reason: "模型未返回内容，可重试" };
+  }
+  if (/超时|timed ?out|ETIMEDOUT|ECONNRESET|fetch failed|网络/.test(msg)) {
+    return { retryable: true, category: "network", reason: "网络超时/连接中断，可重试" };
+  }
+  if (/模型输出中未找到有效 JSON|不是合法 JSON|模型返回为空|分镜数据格式错误/.test(msg)) {
+    return { retryable: true, category: "model_output", reason: "模型输出格式异常，可通过 ReAct 自纠重试" };
+  }
+  return { retryable: false, category: "unknown", reason: msg.slice(0, 80) };
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+/** 带分级重试的 LLM 调用：可重试上游错误指数退避重试，不可重试直接抛（错误带 classified 标记） */
+async function callLLMWithRetry(env, messages, temperature = 0.7) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= LLM_RETRY_MAX; attempt++) {
+    try {
+      return await callLLM(env, messages, temperature);
+    } catch (e) {
+      const cls = classifyError(e);
+      e.classified = cls;
+      lastErr = e;
+      if (!cls.retryable || attempt >= LLM_RETRY_MAX) throw e;
+      await sleep(LLM_RETRY_BASE_MS * Math.pow(2, attempt));
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * 钉钉通知人类（Mock）：生产环境可替换为真实钉钉机器人 Webhook（Secret: DINGTALK_WEBHOOK）。
+ * 当前为 Mock——仅记录通知负载并返回，不真实发送 HTTP 请求（边界如实标注）。
+ */
+function notifyHuman(env, info) {
+  const payload = {
+    channel: "dingtalk-mock",
+    webhook: "mock://dingtalk-robot",
+    notified: true,
+    at: new Date().toISOString(),
+    title: "【分镜工坊】Agent 需要人类介入",
+    text: `任务目标：${info.goal}\n节点：${info.tool}\nReAct 局部循环已连续 ${info.attempts} 次未通过（${info.reason}）\n（Mock 通知，未真实发送）`,
+    mock: true,
+  };
+  return payload;
+}
 
 const TOOL_WHITELIST = ["lookup_trend", "search_materials", "gen_outline", "gen_board", "check_structure"];
 
@@ -168,23 +233,41 @@ function checkOutline(outline) {
 }
 
 /* ==================== ReAct 执行：生成类节点 ==================== */
-/** 生成三幕大纲（ReAct：Reason → Act → Observe → 自纠） */
+/** 生成三幕大纲（ReAct：Reason → Act → Observe → 自纠；连续 5 次未通过 → 钉钉通知人类 Mock） */
 async function genOutlineReAct(env, controller, encoder, goal, memoryText, toolObs) {
   const reactLog = [];
   let outline = null;
   let issues = [];
   let model = "";
+  let lastJsonError = null;
+  let humanNotice = null;
+  let attempts = 0;
 
-  for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
+  for (let round = 0; round < MAX_LOOP_ATTEMPTS; round++) {
+    attempts = round + 1;
     const isFix = round > 0;
     sseEvent(controller, encoder, "stage", {
       step: "react", tool: "gen_outline", round, phase: "reason",
-      text: isFix ? "依据校验反馈重新构思大纲结构" : "根据目标与工具观察构思三幕大纲",
+      text: lastJsonError ? "模型输出格式异常，按严格 JSON 要求重新生成大纲" : (isFix ? "依据校验反馈重新构思大纲结构" : "根据目标与工具观察构思三幕大纲"),
     });
-    const user = `用户目标：${goal}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${toolObs ? `工具观察：\n${toolObs}\n` : ""}${isFix ? `\n上一版大纲的校验问题（需修正）：\n${issues.join("\n")}\n请输出修正后的完整大纲 JSON。` : "请输出三幕大纲 JSON。"}`;
-    const llmOut = await callLLM(env, [{ role: "system", content: OUTLINE_SYSTEM }, { role: "user", content: user }], 0.8);
+    const user = `用户目标：${goal}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${toolObs ? `工具观察：\n${toolObs}\n` : ""}${lastJsonError ? `\n上一版模型输出解析失败（${lastJsonError}），请严格只输出合法 JSON 对象。` : (isFix ? `\n上一版大纲的校验问题（需修正）：\n${issues.join("\n")}\n请输出修正后的完整大纲 JSON。` : "请输出三幕大纲 JSON。")}`;
+    const llmOut = await callLLMWithRetry(env, [{ role: "system", content: OUTLINE_SYSTEM }, { role: "user", content: user }], 0.8);
     model = llmOut.model;
-    outline = normalizeOutline(parseJsonLoose(llmOut.content));
+    try {
+      outline = normalizeOutline(parseJsonLoose(llmOut.content));
+      lastJsonError = null;
+    } catch (e) {
+      lastJsonError = e.message;
+      reactLog.push({ round, jsonError: e.message });
+      sseEvent(controller, encoder, "stage", { step: "react", tool: "gen_outline", round, phase: "observe", text: `模型输出解析失败：${e.message}` });
+      if (attempts >= MAX_LOOP_ATTEMPTS) {
+        humanNotice = notifyHuman(env, { tool: "gen_outline", attempts, reason: e.message, goal });
+        reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
+        sseEvent(controller, encoder, "stage", { step: "human", tool: "gen_outline", channel: "dingtalk-mock", notified: true, mock: true, text: `ReAct 局部循环已连续 ${attempts} 次解析失败，已通过钉钉通知人类介入（Mock）` });
+        throw e;
+      }
+      continue;
+    }
 
     // Observe
     issues = checkOutline(outline);
@@ -198,28 +281,54 @@ async function genOutlineReAct(env, controller, encoder, goal, memoryText, toolO
     });
     reactLog.push({ round, issues: issues.length });
     if (!issues.length) break;
+
+    // 连续 5 次仍未通过 → 通知人类并停止（best-effort 交付当前结果）
+    if (attempts >= MAX_LOOP_ATTEMPTS) {
+      humanNotice = notifyHuman(env, { tool: "gen_outline", attempts, reason: issues[0], goal });
+      reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
+      sseEvent(controller, encoder, "stage", { step: "human", tool: "gen_outline", channel: "dingtalk-mock", notified: true, mock: true, text: `ReAct 局部循环已连续 ${attempts} 次校验未通过（${issues[0]}），已通过钉钉通知人类介入（Mock），交付当前最优结果` });
+      break;
+    }
   }
 
-  return { outline, model, reactLog, fixed: reactLog.length > 1 };
+  return { outline, model, reactLog, fixed: reactLog.some((r) => r.round > 0 && r.issues), humanNotice };
 }
 
-/** 生成第一幕分镜（ReAct：Reason → Act → Observe → 自纠） */
+/** 生成第一幕分镜（ReAct：Reason → Act → Observe → 自纠；连续 5 次未通过 → 钉钉通知人类 Mock） */
 async function genBoardReAct(env, controller, encoder, outline, goal, memoryText) {
   const reactLog = [];
   let board = null;
   let checks = null;
   let model = "";
+  let lastJsonError = null;
+  let humanNotice = null;
+  let attempts = 0;
 
-  for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
+  for (let round = 0; round < MAX_LOOP_ATTEMPTS; round++) {
+    attempts = round + 1;
     const isFix = round > 0;
     sseEvent(controller, encoder, "stage", {
       step: "react", tool: "gen_board", round, phase: "reason",
-      text: isFix ? "依据结构校验反馈调整镜头设计" : "依据三幕大纲设计第一幕分镜",
+      text: lastJsonError ? "模型输出格式异常，按严格 JSON 要求重新生成分镜" : (isFix ? "依据结构校验反馈调整镜头设计" : "依据三幕大纲设计第一幕分镜"),
     });
-    const user = `三幕大纲：\n${JSON.stringify(outline, null, 2)}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${isFix ? `\n当前分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整分镜 JSON 数组。` : "请为第一幕输出分镜脚本 JSON 数组。"}`;
-    const llmOut = await callLLM(env, [{ role: "system", content: BOARD_SYSTEM }, { role: "user", content: user }], 0.8);
+    const user = `三幕大纲：\n${JSON.stringify(outline, null, 2)}\n${memoryText ? `记忆：\n${memoryText}\n` : ""}${lastJsonError ? `\n上一版模型输出解析失败（${lastJsonError}），请严格只输出合法 JSON 数组。` : (isFix ? `\n当前分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整分镜 JSON 数组。` : "请为第一幕输出分镜脚本 JSON 数组。")}`;
+    const llmOut = await callLLMWithRetry(env, [{ role: "system", content: BOARD_SYSTEM }, { role: "user", content: user }], 0.8);
     model = llmOut.model;
-    board = normalizeBoard(parseJsonLoose(llmOut.content));
+    try {
+      board = normalizeBoard(parseJsonLoose(llmOut.content));
+      lastJsonError = null;
+    } catch (e) {
+      lastJsonError = e.message;
+      reactLog.push({ round, jsonError: e.message });
+      sseEvent(controller, encoder, "stage", { step: "react", tool: "gen_board", round, phase: "observe", text: `模型输出解析失败：${e.message}` });
+      if (attempts >= MAX_LOOP_ATTEMPTS) {
+        humanNotice = notifyHuman(env, { tool: "gen_board", attempts, reason: e.message, goal });
+        reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
+        sseEvent(controller, encoder, "stage", { step: "human", tool: "gen_board", channel: "dingtalk-mock", notified: true, mock: true, text: `ReAct 局部循环已连续 ${attempts} 次解析失败，已通过钉钉通知人类介入（Mock）` });
+        throw e;
+      }
+      continue;
+    }
 
     // Observe
     checks = checkStructure(board);
@@ -233,9 +342,17 @@ async function genBoardReAct(env, controller, encoder, outline, goal, memoryText
     });
     reactLog.push({ round, issues: checks.issues.length });
     if (checks.passed) break;
+
+    // 连续 5 次仍未通过 → 通知人类并停止（best-effort 交付当前结果）
+    if (attempts >= MAX_LOOP_ATTEMPTS) {
+      humanNotice = notifyHuman(env, { tool: "gen_board", attempts, reason: checks.issues[0], goal });
+      reactLog.push({ round, humanNotified: true, channel: humanNotice.channel, mock: true });
+      sseEvent(controller, encoder, "stage", { step: "human", tool: "gen_board", channel: "dingtalk-mock", notified: true, mock: true, text: `ReAct 局部循环已连续 ${attempts} 次校验未通过（${checks.issues[0]}），已通过钉钉通知人类介入（Mock），交付当前最优结果` });
+      break;
+    }
   }
 
-  return { board, checks, model, reactLog, fixed: reactLog.length > 1 };
+  return { board, checks, model, reactLog, fixed: reactLog.some((r) => r.round > 0 && r.issues), humanNotice };
 }
 
 /* ==================== Optimize：Reflexion 闭环 ==================== */
@@ -244,7 +361,7 @@ async function optimizeBoard(env, controller, encoder, outline, board, checks, r
   let model = "";
   try {
     const user = `三幕大纲：\n${JSON.stringify(outline, null, 2)}\n\n第一幕分镜：\n${JSON.stringify(board, null, 2)}\n\n结构检查：\n${JSON.stringify(checks)}\n\n质量评审问题：\n${reflection.issues.join("\n")}\n\n改进建议：\n${reflection.suggestions.join("\n")}\n\n请根据以上问题与建议，输出优化后的第一幕分镜脚本。`;
-    const llmOut = await callLLM(env, [{ role: "system", content: OPTIMIZE_SYSTEM }, { role: "user", content: user }], 0.6);
+    const llmOut = await callLLMWithRetry(env, [{ role: "system", content: OPTIMIZE_SYSTEM }, { role: "user", content: user }], 0.6);
     model = llmOut.model;
     const raw = parseJsonLoose(llmOut.content);
     const optimizedBoard = normalizeBoard(Array.isArray(raw) ? raw : raw.board);
@@ -270,7 +387,7 @@ async function optimizeBoard(env, controller, encoder, outline, board, checks, r
 async function buildPlan(env, goal, memoryText) {
   const user = `用户目标：${goal}\n${memoryText ? `用户的创作记忆（偏好）：${memoryText}` : ""}`;
   try {
-    const { content } = await callLLM(env, [
+    const { content } = await callLLMWithRetry(env, [
       { role: "system", content: PLAN_SYSTEM },
       { role: "user", content: user },
     ], 0.4);
@@ -369,6 +486,8 @@ export async function onRequestPost(context) {
         let checks = null;
         let outlineModel = "";
         let boardModel = "";
+        let outlineHuman = null;
+        let boardHuman = null;
         const toolLogs = [];
         const reactLogs = { gen_outline: [], gen_board: [] };
 
@@ -393,6 +512,7 @@ export async function onRequestPost(context) {
               const r = await genOutlineReAct(env, controller, encoder, goal, memoryText, obs);
               outline = r.outline;
               outlineModel = r.model;
+              outlineHuman = r.humanNotice;
               reactLogs.gen_outline = r.reactLog;
               toolLogs.push({ tool: "gen_outline", status: "done", mock: false, summary: `大纲已生成${r.fixed ? "（自纠 1 轮后通过）" : ""}：${(outline.logline || "").slice(0, 40)}…` });
               sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: "三幕大纲已生成", model: outlineModel });
@@ -402,6 +522,7 @@ export async function onRequestPost(context) {
               board = r.board;
               checks = r.checks;
               boardModel = r.model;
+              boardHuman = r.humanNotice;
               reactLogs.gen_board = r.reactLog;
               toolLogs.push({ tool: "gen_board", status: "done", mock: false, summary: `分镜已生成：${board.length} 个镜头${r.fixed ? "（自纠 1 轮后通过）" : ""}` });
               sseEvent(controller, encoder, "stage", { step: "observe", tool: step.action, status: "done", mock: false, summary: `第一幕分镜已生成（${board.length} 个镜头）`, model: boardModel });
@@ -431,7 +552,7 @@ export async function onRequestPost(context) {
         let reflection;
         try {
           const user = `大纲：\n${JSON.stringify(outline)}\n\n分镜：\n${JSON.stringify(board)}\n\n结构检查：${JSON.stringify(checks || {})}\n请输出评审 JSON。`;
-          const { content } = await callLLM(env, [{ role: "system", content: REFLECT_SYSTEM }, { role: "user", content: user }], 0.3);
+          const { content } = await callLLMWithRetry(env, [{ role: "system", content: REFLECT_SYSTEM }, { role: "user", content: user }], 0.3);
           reflection = normalizeReflection(parseJsonLoose(content));
         } catch {
           reflection = {
@@ -465,9 +586,12 @@ export async function onRequestPost(context) {
           reactLogs,
           toolLogs,
           memoryUsed: memoryText ? memory : [],
+          humanNotified: !!(outlineHuman || boardHuman),
+          humanNotice: outlineHuman || boardHuman || null,
         });
       } catch (e) {
-        sseEvent(controller, encoder, "error", { message: e.message || "Agent 执行失败" });
+        const cls = e.classified || classifyError(e);
+        sseEvent(controller, encoder, "error", { message: e.message || "Agent 执行失败", classified: cls });
       } finally {
         try { controller.close(); } catch { /* already closed */ }
       }

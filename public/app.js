@@ -998,6 +998,16 @@
         } else if (obj.step === "reflect" && obj.reflection) {
           state.reflection = obj.reflection;
           snapshotTask();
+        } else if (obj.step === "human") {
+          // ReAct 局部循环熔断：钉钉通知人类（Mock）
+          state.toolLogs.push({
+            tool: obj.tool || "agent",
+            status: "human",
+            mock: true,
+            summary: obj.text || "已通过钉钉通知人类介入（Mock）",
+          });
+          renderToolLog();
+          toast("⚠ " + (obj.text || "Agent 已通过钉钉通知人类介入（Mock）"), true);
         }
       } else if (event === "done") {
         state.plan = obj.plan || state.plan;
@@ -1029,9 +1039,17 @@
         }
         snapshotTask();
         renderTaskList();
+        if (obj.humanNotified) {
+          toast("⚠ ReAct 循环连续失败，已 Mock 钉钉通知人类（best-effort 交付当前结果）", true);
+        }
       } else if (event === "error") {
-        state.toolLogs.push({ tool: "agent", status: "failed", summary: obj.message || "未知错误" });
+        var errMsg = obj.message || "未知错误";
+        if (obj.classified) {
+          errMsg += " 【" + (obj.classified.retryable ? "可重试" : "不可重试") + "】" + obj.classified.reason;
+        }
+        state.toolLogs.push({ tool: "agent", status: "failed", summary: errMsg });
         renderToolLog();
+        toast("执行失败：" + errMsg, true);
         for (var j = 0; j < tasks.length; j++) {
           if (tasks[j].id === currentTaskId) tasks[j].status = "failed";
         }
