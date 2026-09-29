@@ -254,6 +254,7 @@
     state.model = t.model || "未连接";
     ideaInput.value = state.goal;
     agentPanel.classList.remove("section-hidden");
+    $("agent-empty").classList.add("section-hidden");
     if (state.plan.length) renderPlan();
     if (state.toolLogs.length) renderToolLog();
     if (state.reactLogs && Object.keys(state.reactLogs).length) renderReactLog();
@@ -445,6 +446,8 @@
       $("tab-original").classList.remove("active");
     }
     renderBoard();
+    if (previewVisible) renderScriptPreview();
+    refreshChecksLocal();
   }
 
   /* ===== 渲染：大纲 ===== */
@@ -516,6 +519,7 @@
             }
             row.duration = v;
             updateTotalDuration();
+            refreshChecksLocal();
           } else if (c.cls === "col-scale") {
             var ALLOWED = ["远景", "全景", "中景", "近景", "特写"];
             var sv = td.textContent.trim();
@@ -525,8 +529,10 @@
               return;
             }
             row.scale = sv;
+            refreshChecksLocal();
           } else {
             row[c.cls === "col-scene" ? "scene" : c.cls === "col-action" ? "action" : c.cls === "col-dialogue" ? "dialogue" : "caption"] = td.textContent.trim();
+            refreshChecksLocal();
           }
         });
       }
@@ -543,6 +549,7 @@
     delBtn.addEventListener("click", function () {
       state.board.splice(idx, 1);
       renderBoard();
+      refreshChecksLocal();
     });
     delTd.appendChild(delBtn);
     tr.appendChild(delTd);
@@ -552,6 +559,84 @@
   function updateTotalDuration() {
     var total = state.board.reduce(function (sum, r) { return sum + (Number(r.duration) || 0); }, 0);
     $("board-total-duration").textContent = String(total);
+  }
+
+  /* ===== 本地结构检查（与后端 check_structure 同规则，编辑后实时刷新） ===== */
+  function checkStructureLocal(board) {
+    var issues = [];
+    var arr = board || [];
+    var total = arr.reduce(function (sum, r) { return sum + (Number(r.duration) || 0); }, 0);
+    var count = arr.length;
+    var validScales = ["远景", "全景", "中景", "近景", "特写"];
+    if (count < 8) issues.push("镜头数偏少（" + count + " 个），建议 8-12 个以保证节奏");
+    if (count > 12) issues.push("镜头数偏多（" + count + " 个），单集建议控制在 12 个以内");
+    if (total < 60) issues.push("总时长 " + total + "s 低于单集目标下限 60s，建议补充镜头");
+    if (total > 90) issues.push("总时长 " + total + "s 超过单集目标上限 90s，建议精简");
+    var noD = arr.filter(function (r) { return !(r.dialogue || "").trim(); }).length;
+    if (count > 0 && noD / count > 0.7) issues.push("纯画面镜头占比 " + Math.round((noD / count) * 100) + "%，注意叙事信息密度");
+    var bad = arr.filter(function (r) { return validScales.indexOf(r.scale) === -1; });
+    if (bad.length) issues.push("存在非法景别：" + bad.map(function (r) { return r.scale; }).join("、"));
+    var first = arr[0];
+    if (!first || (!first.action && !first.dialogue)) issues.push("第一镜缺少强钩子（建议以冲突动作或反常画面开场）");
+    return { passed: issues.length === 0, totalDuration: total, shotCount: count, issues: issues };
+  }
+
+  function refreshChecksLocal() {
+    if (!state.board.length) return;
+    state.checks = checkStructureLocal(state.board);
+    renderCheckReport();
+  }
+
+  /* ===== 渲染：脚本预览（可读剧本视图） ===== */
+  var previewVisible = false;
+  function renderScriptPreview() {
+    var box = $("script-preview");
+    if (!state.board.length) return;
+    var html = '<div class="script-preview-head">按镜头顺序的可读剧本（与表格实时联动）</div>';
+    state.board.forEach(function (r, i) {
+      html += '<div class="script-shot">';
+      html += '<div class="script-shot-head"><span class="script-shot-no">镜头 ' + (i + 1) + '</span><span class="script-shot-meta">' + r.scene + ' · ' + r.scale + ' · ' + r.duration + 's</span></div>';
+      if (r.action) html += '<div class="script-shot-action">' + r.action + '</div>';
+      if (r.dialogue) html += '<div class="script-shot-dialogue">「' + r.dialogue + '」</div>';
+      if (r.caption) html += '<div class="script-shot-caption">字幕：' + r.caption + '</div>';
+      html += '</div>';
+    });
+    box.innerHTML = html;
+  }
+  function togglePreview() {
+    previewVisible = !previewVisible;
+    var box = $("script-preview");
+    box.classList.toggle("section-hidden", !previewVisible);
+    $("btn-preview").classList.toggle("active", previewVisible);
+    if (previewVisible) renderScriptPreview();
+  }
+
+  /* ===== 导出 JSON（供后续拍摄/制作工具接入） ===== */
+  function exportJson() {
+    if (!state.board.length) { toast("还没有可导出的分镜", true); return; }
+    var payload = {
+      app: "分镜工坊",
+      version: "2.1.0",
+      exportedAt: new Date().toISOString(),
+      goal: state.goal,
+      memory: memoryList,
+      outline: state.outline,
+      board: state.board,
+      view: state.view,
+      checks: state.checks,
+      reflection: state.reflection,
+      optimization: state.optimization,
+      model: state.model,
+    };
+    var blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "storyboard-" + Date.now() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+    toast("已导出 JSON（含大纲/分镜/校验/评审/优化）");
   }
 
   /* ===== 渲染：结构检查报告 ===== */
@@ -610,6 +695,7 @@
     $("agent-react-log").innerHTML = "";
     $("agent-plan").innerHTML = "";
     agentPanel.classList.remove("section-hidden");
+    $("agent-empty").classList.add("section-hidden");
     btnRun.disabled = true;
     $("agent-mode-badge").textContent = "运行中";
     $("agent-mode-badge").className = "badge badge-ai";
@@ -796,6 +882,8 @@
     if (!state.board.length) { toast("请先让 Agent 生成内容", true); return; }
     state.board.push({ id: state.board.length + 1, scene: "新场景", scale: "中景", action: "输入画面动作…", dialogue: "", caption: "", duration: 5 });
     renderBoard();
+    refreshChecksLocal();
+    if (previewVisible) renderScriptPreview();
   }
 
   /* ===== 模型信息 ===== */
@@ -807,6 +895,8 @@
   btnRun.addEventListener("click", runAgent);
   $("tab-original").addEventListener("click", function () { switchView("original"); });
   $("tab-optimized").addEventListener("click", function () { switchView("optimized"); });
+  $("btn-preview").addEventListener("click", togglePreview);
+  $("btn-export-json").addEventListener("click", exportJson);
   $("btn-regen-outline").addEventListener("click", function () {
     if (!state.goal) { toast("请先运行 Agent"); return; }
     toast("已基于原目标重新执行 Agent 全流程");
