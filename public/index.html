@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>分镜工坊 · AI 短剧分镜创作工具</title>
+<meta name="description" content="一句话故事点子，生成短剧三幕大纲与分镜脚本。面向短剧/短视频创作者的 AI 创作工具。">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-icon" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+        <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 7h8M7 7V3h4v4M17 17h4M19 19V7M15 21l4-8 4 8M2 21l4-8 4 8M17 21h-4"/>
+      </svg>
+      <span class="brand-name">分镜工坊</span>
+      <span class="brand-sub">AI 短剧分镜创作工具</span>
+    </div>
+    <div class="topbar-tag">笔试实操作品 · 演示版</div>
+  </header>
+
+  <main class="container">
+    <!-- 第一步：输入点子 -->
+    <section class="hero card">
+      <h1>一句话点子，变成可拍摄的短剧分镜</h1>
+      <p class="hero-desc">输入你的故事创意，AI 先生成三幕大纲，再产出第一幕的逐镜脚本。适合短剧、短视频创作者快速从 0 到 1 验证剧本。</p>
+
+      <div class="idea-box">
+        <label class="field-label" for="idea-input">故事点子</label>
+        <textarea id="idea-input" rows="3" maxlength="2000" placeholder="例：被裁的程序员继承了一家濒临倒闭的影视公司，必须在30天内做出爆款短剧。"></textarea>
+        <div class="idea-tools">
+          <div class="idea-chips" id="idea-chips"></div>
+          <button class="btn btn-primary" id="btn-outline" type="button">
+            <span class="btn-label">生成三幕大纲</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="steps" aria-label="创作流程">
+        <div class="step active"><span class="step-num">1</span><span>故事点子</span></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num">2</span><span>三幕大纲</span></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num">3</span><span>分镜脚本</span></div>
+      </div>
+    </section>
+
+    <!-- 第二步：三幕大纲 -->
+    <section class="card section-hidden" id="outline-section">
+      <div class="section-head">
+        <h2><span class="step-badge">2</span>三幕大纲</h2>
+        <div class="head-actions">
+          <span class="badge badge-ai" id="outline-mode-badge">AI 生成</span>
+          <button class="btn btn-ghost" id="btn-regen-outline" type="button">重新生成</button>
+        </div>
+      </div>
+      <div class="loading" id="outline-loading">
+        <div class="spinner"></div>
+        <p class="loading-text" id="outline-loading-text">正在构思世界观…</p>
+      </div>
+      <div class="outline-body section-hidden" id="outline-body">
+        <p class="logline" id="outline-logline"></p>
+        <div class="meta-grid">
+          <div class="meta-card">
+            <div class="meta-title">世界观</div>
+            <div class="meta-text" id="outline-worldview"></div>
+          </div>
+          <div class="meta-card">
+            <div class="meta-title">主角</div>
+            <div class="meta-text" id="outline-protagonist"></div>
+          </div>
+          <div class="meta-card">
+            <div class="meta-title">核心冲突</div>
+            <div class="meta-text" id="outline-conflict"></div>
+          </div>
+        </div>
+        <div class="acts" id="outline-acts"></div>
+        <div class="board-cta">
+          <button class="btn btn-primary btn-lg" id="btn-storyboard" type="button">
+            <span class="btn-label">生成第一幕分镜脚本</span>
+          </button>
+          <p class="hint">分镜生成以第一幕为例，演示"大纲 → 分镜"的完整路径</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 第三步：分镜脚本 -->
+    <section class="card section-hidden" id="board-section">
+      <div class="section-head">
+        <h2><span class="step-badge">3</span>第一幕分镜脚本</h2>
+        <div class="head-actions">
+          <span class="badge badge-ai" id="board-mode-badge">AI 生成</span>
+          <button class="btn btn-ghost" id="btn-add-row" type="button">＋ 添加镜头</button>
+          <button class="btn btn-ghost" id="btn-copy" type="button">复制 Markdown</button>
+          <button class="btn btn-ghost" id="btn-export" type="button">导出 .md</button>
+        </div>
+      </div>
+      <div class="loading" id="board-loading">
+        <div class="spinner"></div>
+        <p class="loading-text" id="board-loading-text">正在设计镜头语言…</p>
+      </div>
+      <div class="board-body section-hidden" id="board-body">
+        <div class="board-tip">表格单元格可直接点击编辑；总时长 <span id="board-total-duration">--</span> 秒</div>
+        <div class="table-wrap">
+          <table class="board-table" id="board-table">
+            <thead>
+              <tr>
+                <th class="col-idx">#</th>
+                <th class="col-scene">场景</th>
+                <th class="col-scale">景别</th>
+                <th class="col-action">画面动作</th>
+                <th class="col-dialogue">台词</th>
+                <th class="col-caption">字幕建议</th>
+                <th class="col-duration">时长(s)</th>
+                <th class="col-del"></th>
+              </tr>
+            </thead>
+            <tbody id="board-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 边界说明 -->
+    <section class="card notes">
+      <h3>当前版本边界说明</h3>
+      <ul>
+        <li><strong>真实可用：</strong>点子 → 三幕大纲 → 第一幕分镜的完整生成链路，接入了真实大模型 API。</li>
+        <li><strong>可编辑：</strong>大纲与分镜均可直接编辑、重新生成、导出 Markdown。</li>
+        <li><strong>未完成：</strong>第二/三幕分镜、多人协作、剧本库存储、图片/视频预览为下一步方向。</li>
+        <li><strong>说明：</strong>当前为演示版，模型调用在 Worker 侧完成，API Key 不暴露于前端。</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>分镜工坊 · 笔试实操项目</span>
+    <span id="model-info">模型：未连接</span>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

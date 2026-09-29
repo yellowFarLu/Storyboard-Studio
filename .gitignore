@@ -1,0 +1,9 @@
+# 依赖与构建产物
+node_modules/
+dist/
+.wrangler/
+
+# 环境与密钥（绝不提交真实密钥）
+.env
+.env.*
+*.key

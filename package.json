@@ -1,0 +1,13 @@
+{
+  "name": "storyboard-studio",
+  "version": "1.0.0",
+  "description": "分镜工坊 - AI 短剧分镜创作工具（笔试实操项目）",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler pages dev public --compatibility-date=2024-11-01",
+    "deploy": "wrangler pages deploy public --project-name storyboard-studio"
+  },
+  "devDependencies": {
+    "wrangler": "^4.14.0"
+  }
+}
