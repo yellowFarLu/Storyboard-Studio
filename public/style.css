@@ -208,6 +208,79 @@ td[contenteditable="true"]:focus { background: #eaf7f7; box-shadow: inset 0 0 0 
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.error { background: var(--danger); }
 
+/* ===== 记忆面板 ===== */
+.memory-box {
+  margin-top: 18px; padding: 14px 16px;
+  border: 1px dashed #cdeae8; border-radius: 10px; background: #f7fcfc;
+}
+.memory-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.memory-title { font-size: 14px; font-weight: 700; color: var(--brand-dark); }
+.memory-hint { font-size: 12px; color: var(--ink-3); }
+.memory-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.memory-tag {
+  font-size: 13px; color: var(--ink-2); background: #fff;
+  border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.memory-del { cursor: pointer; color: var(--ink-3); font-size: 12px; }
+.memory-del:hover { color: var(--danger); }
+.memory-add { display: flex; gap: 8px; }
+.memory-add input {
+  flex: 1; min-width: 200px; border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 12px; font-size: 13px; font-family: inherit; outline: none;
+}
+.memory-add input:focus { border-color: var(--brand); }
+.btn-sm { padding: 7px 14px; font-size: 13px; }
+
+/* ===== Agent 过程面板 ===== */
+.agent-sub-title { font-size: 14px; font-weight: 700; color: var(--ink-2); margin: 6px 0 10px; }
+.plan-list, .tool-log-list { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.plan-item, .tool-log-item {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+  font-size: 14px; background: #fbfcfe;
+}
+.plan-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--ink-3); flex: none; }
+.plan-item.running .plan-dot { background: var(--brand); animation: pulse 1s infinite; }
+.plan-item.done .plan-dot { background: var(--ok); }
+.plan-item.failed .plan-dot { background: var(--danger); }
+.plan-item.running { border-color: var(--brand); background: var(--brand-soft); }
+.plan-item.done { opacity: .85; }
+@keyframes pulse { 50% { opacity: .35; } }
+.plan-label { color: var(--ink); }
+.tool-log-item { align-items: flex-start; flex-direction: column; gap: 4px; }
+.tool-name { font-weight: 700; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; }
+.tool-mock { font-size: 11px; padding: 1px 7px; }
+.tool-summary { font-size: 13px; color: var(--ink-2); }
+
+/* ===== 反思面板 ===== */
+.agent-reflect { margin-top: 4px; }
+.reflect-score {
+  font-size: 15px; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+  background: #f0f0f0; color: var(--ink-2);
+}
+.reflect-score.high { background: #e8f7ee; color: #009a4e; }
+.reflect-score.mid { background: #fff7e8; color: #cc7300; }
+.reflect-score.low { background: #fff0f0; color: #d43c3c; }
+.reflect-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.reflect-col { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
+.reflect-title { font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+.reflect-title.ok { color: var(--ok); }
+.reflect-title.warn { color: #cc7300; }
+.reflect-title.tip { color: var(--brand-dark); }
+.reflect-col ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+.reflect-col li { font-size: 13px; color: var(--ink-2); }
+
+/* ===== 结构检查报告 ===== */
+.check-report { margin-top: 14px; }
+.check-pass, .check-fail {
+  border-radius: 8px; padding: 10px 14px; font-size: 13px;
+}
+.check-pass { background: #e8f7ee; color: #009a4e; border: 1px solid #bfe8cd; }
+.check-fail { background: #fff7e8; color: #cc7300; border: 1px solid #ffe0b3; }
+.check-fail ul { margin: 6px 0 0; padding-left: 18px; }
+.check-fail li { margin-top: 2px; }
+
 /* ===== 响应式 ===== */
 @media (max-width: 720px) {
   .topbar { padding: 10px 14px; }

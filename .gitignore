@@ -6,4 +6,5 @@ dist/
 # 环境与密钥（绝不提交真实密钥）
 .env
 .env.*
+.dev.vars
 *.key

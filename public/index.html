@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>分镜工坊 · AI 短剧分镜创作工具</title>
-<meta name="description" content="一句话故事点子，生成短剧三幕大纲与分镜脚本。面向短剧/短视频创作者的 AI 创作工具。">
+<title>分镜工坊 · AI 短剧创作 Agent</title>
+<meta name="description" content="面向短剧/短视频创作者的 AI 创作 Agent：规划-执行-反思-观察，一句话目标产出三幕大纲与分镜脚本。">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,77 +14,99 @@
         <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 7h8M7 7V3h4v4M17 17h4M19 19V7M15 21l4-8 4 8M2 21l4-8 4 8M17 21h-4"/>
       </svg>
       <span class="brand-name">分镜工坊</span>
-      <span class="brand-sub">AI 短剧分镜创作工具</span>
+      <span class="brand-sub">AI 短剧创作 Agent</span>
     </div>
-    <div class="topbar-tag">笔试实操作品 · 演示版</div>
+    <div class="topbar-tag">笔试实操作品 · Agent 版</div>
   </header>
 
   <main class="container">
-    <!-- 第一步：输入点子 -->
+    <!-- 输入与记忆 -->
     <section class="hero card">
-      <h1>一句话点子，变成可拍摄的短剧分镜</h1>
-      <p class="hero-desc">输入你的故事创意，AI 先生成三幕大纲，再产出第一幕的逐镜脚本。适合短剧、短视频创作者快速从 0 到 1 验证剧本。</p>
+      <h1>一句话目标，Agent 帮你产出可拍摄的短剧</h1>
+      <p class="hero-desc">输入创作目标，Agent 会自主规划（Plan）→ 分步执行（Execute，含工具调用）→ 观察结果（Observe）→ 反思自评（Reflect），产出三幕大纲与第一幕分镜脚本。</p>
 
       <div class="idea-box">
-        <label class="field-label" for="idea-input">故事点子</label>
-        <textarea id="idea-input" rows="3" maxlength="2000" placeholder="例：被裁的程序员继承了一家濒临倒闭的影视公司，必须在30天内做出爆款短剧。"></textarea>
+        <label class="field-label" for="idea-input">创作目标</label>
+        <textarea id="idea-input" rows="3" maxlength="2000" placeholder="例：帮我做一个程序员继承影视公司做爆款短剧的第一集，要强反转、快节奏"></textarea>
         <div class="idea-tools">
           <div class="idea-chips" id="idea-chips"></div>
-          <button class="btn btn-primary" id="btn-outline" type="button">
-            <span class="btn-label">生成三幕大纲</span>
+          <button class="btn btn-primary" id="btn-run-agent" type="button">
+            <span class="btn-label">让 Agent 开工</span>
           </button>
         </div>
       </div>
 
-      <div class="steps" aria-label="创作流程">
-        <div class="step active"><span class="step-num">1</span><span>故事点子</span></div>
+      <!-- 记忆面板 -->
+      <div class="memory-box">
+        <div class="memory-head">
+          <span class="memory-title">🧠 创作记忆（本地模拟长期记忆）</span>
+          <span class="memory-hint">Agent 会把这些偏好注入创作过程</span>
+        </div>
+        <div class="memory-tags" id="memory-tags"></div>
+        <div class="memory-add">
+          <input id="memory-input" type="text" maxlength="50" placeholder="添加一条创作偏好，如：喜欢强反转结局">
+          <button class="btn btn-ghost btn-sm" id="btn-memory-add" type="button">添加</button>
+        </div>
+      </div>
+
+      <div class="steps" aria-label="Agent 工作流程">
+        <div class="step active"><span class="step-num">P</span><span>规划 Plan</span></div>
         <div class="step-line"></div>
-        <div class="step"><span class="step-num">2</span><span>三幕大纲</span></div>
+        <div class="step"><span class="step-num">E</span><span>执行 Execute</span></div>
         <div class="step-line"></div>
-        <div class="step"><span class="step-num">3</span><span>分镜脚本</span></div>
+        <div class="step"><span class="step-num">O</span><span>观察 Observe</span></div>
+        <div class="step-line"></div>
+        <div class="step"><span class="step-num">R</span><span>反思 Reflect</span></div>
       </div>
     </section>
 
-    <!-- 第二步：三幕大纲 -->
+    <!-- Agent 过程面板 -->
+    <section class="card section-hidden" id="agent-panel">
+      <div class="section-head">
+        <h2><span class="step-badge">A</span>Agent 工作过程</h2>
+        <span class="badge badge-ai" id="agent-mode-badge">运行中</span>
+      </div>
+      <div class="agent-plan" id="agent-plan"></div>
+      <div class="agent-tool-log" id="agent-tool-log"></div>
+      <div class="agent-reflect section-hidden" id="agent-reflect">
+        <div class="reflect-score" id="reflect-score"></div>
+        <div class="reflect-grid">
+          <div class="reflect-col">
+            <div class="reflect-title ok">优点</div>
+            <ul id="reflect-strengths"></ul>
+          </div>
+          <div class="reflect-col">
+            <div class="reflect-title warn">问题</div>
+            <ul id="reflect-issues"></ul>
+          </div>
+          <div class="reflect-col">
+            <div class="reflect-title tip">改进建议</div>
+            <ul id="reflect-suggestions"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 三幕大纲 -->
     <section class="card section-hidden" id="outline-section">
       <div class="section-head">
         <h2><span class="step-badge">2</span>三幕大纲</h2>
         <div class="head-actions">
-          <span class="badge badge-ai" id="outline-mode-badge">AI 生成</span>
           <button class="btn btn-ghost" id="btn-regen-outline" type="button">重新生成</button>
         </div>
       </div>
-      <div class="loading" id="outline-loading">
-        <div class="spinner"></div>
-        <p class="loading-text" id="outline-loading-text">正在构思世界观…</p>
-      </div>
-      <div class="outline-body section-hidden" id="outline-body">
+      <div class="outline-body" id="outline-body">
         <p class="logline" id="outline-logline"></p>
         <div class="meta-grid">
-          <div class="meta-card">
-            <div class="meta-title">世界观</div>
-            <div class="meta-text" id="outline-worldview"></div>
-          </div>
-          <div class="meta-card">
-            <div class="meta-title">主角</div>
-            <div class="meta-text" id="outline-protagonist"></div>
-          </div>
-          <div class="meta-card">
-            <div class="meta-title">核心冲突</div>
-            <div class="meta-text" id="outline-conflict"></div>
-          </div>
+          <div class="meta-card"><div class="meta-title">世界观</div><div class="meta-text" id="outline-worldview"></div></div>
+          <div class="meta-card"><div class="meta-title">主角</div><div class="meta-text" id="outline-protagonist"></div></div>
+          <div class="meta-card"><div class="meta-title">核心冲突</div><div class="meta-text" id="outline-conflict"></div></div>
         </div>
         <div class="acts" id="outline-acts"></div>
-        <div class="board-cta">
-          <button class="btn btn-primary btn-lg" id="btn-storyboard" type="button">
-            <span class="btn-label">生成第一幕分镜脚本</span>
-          </button>
-          <p class="hint">分镜生成以第一幕为例，演示"大纲 → 分镜"的完整路径</p>
-        </div>
       </div>
     </section>
 
-    <!-- 第三步：分镜脚本 -->
+    <!-- 分镜脚本 -->
     <section class="card section-hidden" id="board-section">
       <div class="section-head">
         <h2><span class="step-badge">3</span>第一幕分镜脚本</h2>
@@ -95,11 +117,7 @@
           <button class="btn btn-ghost" id="btn-export" type="button">导出 .md</button>
         </div>
       </div>
-      <div class="loading" id="board-loading">
-        <div class="spinner"></div>
-        <p class="loading-text" id="board-loading-text">正在设计镜头语言…</p>
-      </div>
-      <div class="board-body section-hidden" id="board-body">
+      <div class="board-body" id="board-body">
         <div class="board-tip">表格单元格可直接点击编辑；总时长 <span id="board-total-duration">--</span> 秒</div>
         <div class="table-wrap">
           <table class="board-table" id="board-table">
@@ -118,17 +136,18 @@
             <tbody id="board-tbody"></tbody>
           </table>
         </div>
+        <div class="check-report section-hidden" id="check-report"></div>
       </div>
     </section>
 
     <!-- 边界说明 -->
     <section class="card notes">
-      <h3>当前版本边界说明</h3>
+      <h3>Agent 能力与边界说明（如实标注）</h3>
       <ul>
-        <li><strong>真实可用：</strong>点子 → 三幕大纲 → 第一幕分镜的完整生成链路，接入了真实大模型 API。</li>
-        <li><strong>可编辑：</strong>大纲与分镜均可直接编辑、重新生成、导出 Markdown。</li>
-        <li><strong>未完成：</strong>第二/三幕分镜、多人协作、剧本库存储、图片/视频预览为下一步方向。</li>
-        <li><strong>说明：</strong>当前为演示版，模型调用在 Worker 侧完成，API Key 不暴露于前端。</li>
+        <li><strong>PERO 循环：</strong>Plan（LLM 规划步骤）→ Execute（逐步执行）→ Observe（过程可见）→ Reflect（LLM 质量评审），全部真实运行。</li>
+        <li><strong>工具调用：</strong>「题材热度查询」「素材搜索」为 <strong>Mock（内置示例数据，未接真实数据源）</strong>；「分镜结构检查」为本地规则引擎真实执行；「大纲/分镜生成」为真实大模型（DeepSeek）。</li>
+        <li><strong>记忆：</strong>创作偏好存于浏览器 localStorage，为<strong>本地模拟长期记忆</strong>（未接数据库/向量记忆），注入规划与生成 Prompt。</li>
+        <li><strong>未完成：</strong>第二/三幕分镜、真实素材检索、跨会话云端记忆、图片/视频预览。</li>
       </ul>
     </section>
   </main>
