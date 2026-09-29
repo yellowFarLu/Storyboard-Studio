@@ -338,6 +338,7 @@
       }
       // 追加镜头到工作台并刷新全部视图（工作台/检查/场景统计/历史）
       state.board = state.board.concat(res.d.shots);
+      boardPage = 999999; // 跳到最后一页展示新镜头
       renderBoard();
       refreshChecksLocal();
       for (var k = 0; k < tasks.length; k++) {
@@ -457,7 +458,7 @@
     if (state.toolLogs.length) renderToolLog();
     if (state.reactLogs && Object.keys(state.reactLogs).length) renderReactLog();
     if (state.outline) renderOutline();
-    if (state.board.length) { renderBoard(); renderCheckReport(); }
+    if (state.board.length) { boardPage = 999999; renderBoard(); renderCheckReport(); }
     if (state.reflection) renderReflect();
     renderOptimize();
     if (state.board.length || state.outline) {
@@ -507,7 +508,10 @@
     box.innerHTML = '<div class="agent-sub-title">📋 规划（Plan）</div>';
     var list = document.createElement("ul");
     list.className = "plan-list";
-    (state.plan || []).forEach(function (s) {
+    var plan = state.plan || [];
+    var MAX = 30;
+    var shown = plan.slice(0, MAX);
+    shown.forEach(function (s) {
       var li = document.createElement("li");
       li.className = "plan-item " + (s.status || "pending");
       var dot = document.createElement("span");
@@ -519,6 +523,12 @@
       li.appendChild(label);
       list.appendChild(li);
     });
+    if (plan.length > MAX) {
+      var more = document.createElement("li");
+      more.className = "plan-more";
+      more.textContent = "… 其余 " + (plan.length - MAX) + " 个步骤已折叠（大任务性能优化）";
+      list.appendChild(more);
+    }
     box.appendChild(list);
   }
 
@@ -529,7 +539,8 @@
     box.innerHTML = '<div class="agent-sub-title">🔧 工具调用与观察（Execute / Observe）</div>';
     var list = document.createElement("ul");
     list.className = "tool-log-list";
-    state.toolLogs.forEach(function (l) {
+    var logs = state.toolLogs.slice(0, 50);
+    logs.forEach(function (l) {
       var li = document.createElement("li");
       li.className = "tool-log-item";
       var name = document.createElement("span");
@@ -548,6 +559,12 @@
       li.appendChild(summary);
       list.appendChild(li);
     });
+    if (state.toolLogs.length > 50) {
+      var more = document.createElement("li");
+      more.className = "tool-log-more";
+      more.textContent = "… 其余 " + (state.toolLogs.length - 50) + " 条日志已折叠（大任务性能优化）";
+      list.appendChild(more);
+    }
     box.appendChild(list);
   }
 
@@ -595,6 +612,7 @@
       node.appendChild(head);
       var rounds = {};
       steps.forEach(function (st) { (rounds[st.round] = rounds[st.round] || []).push(st); });
+      var rowsShown = 0, rowsTotal = 0, MAX_ROWS = 6;
       Object.keys(rounds).forEach(function (r) {
         if (Number(r) > 0) {
           var fix = document.createElement("div");
@@ -602,7 +620,10 @@
           fix.textContent = "第 " + (Number(r) + 1) + " 轮（自纠）";
           node.appendChild(fix);
         }
+        rowsTotal += rounds[r].length;
         rounds[r].forEach(function (st) {
+          if (rowsShown >= MAX_ROWS) return;
+          rowsShown++;
           var row = document.createElement("div");
           row.className = "react-row " + st.phase;
           var icon = st.phase === "reason" ? "🤔 思考" : st.phase === "act" ? "⚡ 行动" : "👁 观察";
@@ -610,6 +631,12 @@
           node.appendChild(row);
         });
       });
+      if (rowsTotal > MAX_ROWS) {
+        var more = document.createElement("div");
+        more.className = "react-more";
+        more.textContent = "… 其余 " + (rowsTotal - MAX_ROWS) + " 行轨迹已折叠（大任务性能优化）";
+        node.appendChild(more);
+      }
       box.appendChild(node);
     });
   }
@@ -656,7 +683,8 @@
     outlineSection.classList.remove("section-hidden");
     $("outline-logline").textContent = o.logline || "（未生成梗概）";
     $("outline-worldview").textContent = o.worldview || "—";
-    $("outline-protagonist").textContent = (o.protagonist.name || "—") + (o.protagonist.desc ? "，" + o.protagonist.desc : "");
+    // 容错：任务大纲结构不完整时（如历史数据缺失）不崩溃
+    $("outline-protagonist").textContent = ((o.protagonist && o.protagonist.name) || "—") + (o.protagonist && o.protagonist.desc ? "，" + o.protagonist.desc : "");
     $("outline-conflict").textContent = o.conflict || "—";
     var actsEl = $("outline-acts");
     actsEl.innerHTML = "";
@@ -699,22 +727,44 @@
     if (!state.board.length) { box.classList.add("section-hidden"); return; }
     box.classList.remove("section-hidden");
     var total = state.board.length;
-    box.innerHTML = '<div class="camera-tips-title">🎥 运镜建议<span class="badge badge-ai">本地规则引擎</span></div><div class="camera-tips-list">' +
-      state.board.map(function (row, i) {
-        return '<div class="camera-tip"><span class="camera-tip-no">镜' + (i + 1) + '</span><span>' + cameraTip(row, i, total) + '</span></div>';
-      }).join("") + '</div>';
+    var r = pageRange();
+    var items = [];
+    for (var i = r.start; i < r.end; i++) {
+      items.push('<div class="camera-tip"><span class="camera-tip-no">镜' + (i + 1) + '</span><span>' + cameraTip(state.board[i], i, total) + '</span></div>');
+    }
+    box.innerHTML = '<div class="camera-tips-title">🎥 运镜建议<span class="badge badge-ai">本地规则引擎</span><span class="camera-tips-count">当前页 ' + items.length + ' / 共 ' + total + ' 镜</span></div><div class="camera-tips-list">' + items.join("") + '</div>';
   }
   function renderBoard() {
     var tbody = $("board-tbody");
     tbody.innerHTML = "";
-    state.board.forEach(function (row, i) {
-      tbody.appendChild(renderRow(row, i));
-    });
+    var r = pageRange();
+    for (var i = r.start; i < r.end; i++) tbody.appendChild(renderRow(state.board[i], i));
+    renderPagination();
     updateTotalDuration();
     renderSceneStats();
     renderCameraTips();
     boardSection.classList.remove("section-hidden");
     syncBoardView();
+  }
+
+  /* 分页控件（表格/卡片/脚本三视图共用同一页） */
+  function renderPagination() {
+    var box = $("board-pagination");
+    var pages = totalPages();
+    if (pages <= 1) { box.innerHTML = ""; return; }
+    var info = '<span class="page-info">共 ' + state.board.length + ' 镜 · 第 ' + (boardPage + 1) + ' / ' + pages + ' 页（每页 ' + BOARD_PAGE_SIZE + ' 镜）</span>';
+    var html = info + '<button class="page-btn" id="page-prev"' + (boardPage <= 0 ? " disabled" : "") + '>上一页</button>';
+    html += '<button class="page-btn" id="page-next"' + (boardPage >= pages - 1 ? " disabled" : "") + '>下一页</button>';
+    html += '<span style="color:var(--muted,#9aa)">跳到第</span><input type="number" id="page-jump" min="1" max="' + pages + '" value="' + (boardPage + 1) + '"><span style="color:var(--muted,#9aa)">页</span>';
+    html += '<button class="page-btn" id="page-go">跳转</button>';
+    box.innerHTML = html;
+    var prev = $("page-prev"), next = $("page-next"), jump = $("page-jump"), go = $("page-go");
+    if (prev) prev.onclick = function () { if (boardPage > 0) { boardPage--; renderBoard(); window.scrollTo({ top: 0, behavior: "smooth" }); } };
+    if (next) next.onclick = function () { if (boardPage < pages - 1) { boardPage++; renderBoard(); window.scrollTo({ top: 0, behavior: "smooth" }); } };
+    if (go) go.onclick = function () {
+      var v = parseInt(jump.value, 10);
+      if (!isNaN(v) && v >= 1 && v <= pages) { boardPage = v - 1; renderBoard(); window.scrollTo({ top: 0, behavior: "smooth" }); }
+    };
   }
 
   function renderRow(row, idx) {
@@ -745,8 +795,6 @@
               return;
             }
             row.duration = v;
-            updateTotalDuration();
-            refreshChecksLocal();
           } else if (c.cls === "col-scale") {
             var ALLOWED = ["远景", "全景", "中景", "近景", "特写"];
             var sv = td.textContent.trim();
@@ -756,7 +804,6 @@
               return;
             }
             row.scale = sv;
-            refreshChecksLocal();
           } else if (c.cls === "col-camera") {
             var CAMS = ["固定", "推", "拉", "摇", "移", "跟", "升", "降", "环绕", "手持"];
             var cv = td.textContent.trim();
@@ -766,11 +813,12 @@
               return;
             }
             row.camera = cv;
-            refreshChecksLocal();
           } else {
             row[c.cls === "col-scene" ? "scene" : c.cls === "col-action" ? "action" : c.cls === "col-dialogue" ? "dialogue" : "caption"] = td.textContent.trim();
-            refreshChecksLocal();
           }
+          // 编辑持久化 + 派生统计防抖重算（连续编辑只算一次）
+          saveTasks();
+          scheduleDerivedRefresh();
         });
       }
       tr.appendChild(td);
@@ -787,6 +835,7 @@
       state.board.splice(idx, 1);
       renderBoard();
       refreshChecksLocal();
+      saveTasks(); // 删除后持久化（含云同步），刷新不丢失
     });
     delTd.appendChild(delBtn);
     tr.appendChild(delTd);
@@ -829,20 +878,46 @@
 
   /* ===== 渲染：脚本预览（可读剧本视图） ===== */
   var boardViewMode = "table";
+  // 大任务分页渲染：每页固定行数，DOM 恒定量，避免长剧（几百镜）全量构建卡顿
+  var BOARD_PAGE_SIZE = 50;
+  var boardPage = 0; // 当前页（0-based）
+  var derivedTimer = null; // 编辑派生统计防抖
+  function scheduleDerivedRefresh() {
+    if (derivedTimer) clearTimeout(derivedTimer);
+    derivedTimer = setTimeout(function () {
+      updateTotalDuration();
+      renderSceneStats();
+      renderCameraTips();
+      refreshChecksLocal();
+    }, 150);
+  }
+  function totalPages() { return Math.max(1, Math.ceil(state.board.length / BOARD_PAGE_SIZE)); }
+  function clampBoardPage() {
+    var pages = totalPages();
+    if (boardPage > pages - 1) boardPage = pages - 1;
+    if (boardPage < 0) boardPage = 0;
+  }
+  function pageRange() {
+    clampBoardPage();
+    var start = boardPage * BOARD_PAGE_SIZE;
+    return { start: start, end: Math.min(start + BOARD_PAGE_SIZE, state.board.length) };
+  }
 
   /* ===== 分镜卡片视图（对标 Boords Grid view / LTX Shot 卡片：一镜一卡，竖屏拍摄板） ===== */
   function renderBoardCards() {
     var box = $("board-cards");
     if (!state.board.length) { box.innerHTML = ""; return; }
     var html = '<div class="board-cards-head">分镜卡片 · 一镜一卡（竖屏拍摄板，只读；编辑请切回「表格」）</div><div class="card-grid">';
-    state.board.forEach(function (r, i) {
+    var r = pageRange();
+    for (var i = r.start; i < r.end; i++) {
+      var c = state.board[i];
       html += '<div class="shot-card">';
-      html += '<div class="shot-card-top"><span class="shot-no">镜头 ' + (i + 1) + '</span><span class="shot-meta">' + r.scene + ' · ' + r.scale + ' · ' + (r.camera || "固定") + ' · ' + r.duration + 's</span></div>';
-      if (r.action) html += '<div class="shot-action">' + r.action + '</div>';
-      if (r.dialogue) html += '<div class="shot-dialogue">「' + r.dialogue + '」</div>';
-      if (r.caption) html += '<div class="shot-caption">字幕：' + r.caption + '</div>';
+      html += '<div class="shot-card-top"><span class="shot-no">镜头 ' + (i + 1) + '</span><span class="shot-meta">' + c.scene + ' · ' + c.scale + ' · ' + (c.camera || "固定") + ' · ' + c.duration + 's</span></div>';
+      if (c.action) html += '<div class="shot-action">' + c.action + '</div>';
+      if (c.dialogue) html += '<div class="shot-dialogue">「' + c.dialogue + '」</div>';
+      if (c.caption) html += '<div class="shot-caption">字幕：' + c.caption + '</div>';
       html += '</div>';
-    });
+    }
     html += '</div>';
     box.innerHTML = html;
   }
@@ -864,15 +939,17 @@
   function renderScriptPreview() {
     var box = $("script-preview");
     if (!state.board.length) return;
-    var html = '<div class="script-preview-head">按镜头顺序的可读剧本（与表格实时联动）</div>';
-    state.board.forEach(function (r, i) {
+    var html = '<div class="script-preview-head">按镜头顺序的可读剧本（与表格实时联动，当前页）</div>';
+    var r = pageRange();
+    for (var i = r.start; i < r.end; i++) {
+      var c = state.board[i];
       html += '<div class="script-shot">';
-      html += '<div class="script-shot-head"><span class="script-shot-no">镜头 ' + (i + 1) + '</span><span class="script-shot-meta">' + r.scene + ' · ' + r.scale + ' · ' + (r.camera || "固定") + ' · ' + r.duration + 's</span></div>';
-      if (r.action) html += '<div class="script-shot-action">' + r.action + '</div>';
-      if (r.dialogue) html += '<div class="script-shot-dialogue">「' + r.dialogue + '」</div>';
-      if (r.caption) html += '<div class="script-shot-caption">字幕：' + r.caption + '</div>';
+      html += '<div class="script-shot-head"><span class="script-shot-no">镜头 ' + (i + 1) + '</span><span class="script-shot-meta">' + c.scene + ' · ' + c.scale + ' · ' + (c.camera || "固定") + ' · ' + c.duration + 's</span></div>';
+      if (c.action) html += '<div class="script-shot-action">' + c.action + '</div>';
+      if (c.dialogue) html += '<div class="script-shot-dialogue">「' + c.dialogue + '」</div>';
+      if (c.caption) html += '<div class="script-shot-caption">字幕：' + c.caption + '</div>';
       html += '</div>';
-    });
+    }
     box.innerHTML = html;
   }
   /* 页面视图切换（创作 / 工作台 / 历史 / 关于） */
@@ -965,10 +1042,14 @@
       groups[key].count += 1;
       groups[key].duration += Number(r.duration) || 0;
     });
+    var keys = Object.keys(groups);
+    var SHOW = 15;
+    var shown = keys.slice(0, SHOW);
     var html = '<div class="scene-stats-title">🎬 场景分组统计（拍摄计划参考）</div>';
-    Object.keys(groups).forEach(function (k) {
+    shown.forEach(function (k) {
       html += '<span class="scene-chip">' + k + ' · ' + groups[k].count + " 镜 · " + groups[k].duration + "s</span>";
     });
+    if (keys.length > SHOW) html += '<span class="scene-chip scene-chip-more">… 等 ' + keys.length + ' 个场景</span>';
     box.innerHTML = html;
     box.classList.remove("section-hidden");
   }
