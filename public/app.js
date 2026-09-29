@@ -215,6 +215,48 @@
       var actions = document.createElement("div");
       actions.className = "task-actions";
       var btnView = mkBtn("查看", "btn btn-ghost btn-sm", function () { restoreTask(t.id); });
+      var btnCont = null;
+      // 仅未续写过的任务显示（第一幕 8-12 镜；超过视为已续写第二幕）
+      if (t.status === "done" && t.board && t.board.length && t.board.length <= 12) {
+        btnCont = mkBtn("续写第二幕", "btn btn-ghost btn-sm", function () {
+          var self = this;
+          if (self.disabled) return;
+          self.disabled = true;
+          self.textContent = "续写中…";
+          toast("正在基于第一幕续写第二幕分镜…");
+          restoreTask(t.id);
+          fetch("/api/agent/continue", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList })
+          })
+          .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
+          .then(function (res) {
+            if (!res.d.ok) {
+              toast("续写失败：" + (res.d.error || ("HTTP " + res.status)), true);
+              return;
+            }
+            // 追加第二幕镜头到工作台并刷新全部视图
+            state.board = state.board.concat(res.d.shots);
+            renderBoard();
+            refreshChecksLocal();
+            // 写回任务并刷新历史列表
+            for (var k = 0; k < tasks.length; k++) {
+              if (tasks[k].id === t.id) { tasks[k].board = state.board; tasks[k].checks = state.checks; break; }
+            }
+            saveTasks();
+            renderTaskList();
+            showView("workspace");
+            toast("已续写第二幕 " + res.d.act2Count + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
+          })
+          .catch(function (e) {
+            toast("续写失败：" + e.message, true);
+          })
+          .finally(function () {
+            if (btnCont) { btnCont.disabled = false; btnCont.textContent = "续写第二幕"; }
+          });
+        });
+      }
       var btnRegen = mkBtn("重新生成", "btn btn-ghost btn-sm", function () {
         ideaInput.value = t.goal;
         runAgent();
@@ -226,6 +268,7 @@
         toast("已删除任务");
       });
       actions.appendChild(btnView);
+      if (btnCont) actions.appendChild(btnCont);
       actions.appendChild(btnRegen);
       actions.appendChild(btnDel);
       item.appendChild(main);
