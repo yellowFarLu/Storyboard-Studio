@@ -8,7 +8,7 @@
  * 逆向校验：GET 405 / 非 JSON 415 / 坏 JSON 400 / 缺字段 400 /
  * askId 不存在或已超时 404 / clientRunId 不匹配 400。
  */
-import { askRegistry } from "../../shared/ask-state.js";
+import { readAsk, writeAnswer } from "../../shared/ask-state.js";
 
 export async function onRequest(context) {
   if (context.request.method !== "POST") {
@@ -49,7 +49,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  const entry = askRegistry.get(askId);
+  const entry = await readAsk(context.env, askId);
   if (!entry) {
     return new Response(JSON.stringify({ ok: false, error: "澄清不存在或已超时/流程已结束" }), {
       status: 404, headers: { "content-type": "application/json; charset=utf-8" },
@@ -61,7 +61,7 @@ export async function onRequestPost(context) {
     });
   }
 
-  entry.resolve({ key: entry.key, question: entry.question, answer, answeredBy: "human" });
+  await writeAnswer(context.env, askId, { key: entry.key, question: entry.question, answer, answeredBy: "human" });
   return new Response(JSON.stringify({ ok: true, answered: true }), {
     status: 200,
     headers: { "content-type": "application/json; charset=utf-8" },

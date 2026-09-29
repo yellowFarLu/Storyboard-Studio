@@ -16,3 +16,9 @@ LLM_MODEL = "deepseek-chat"
 [[kv_namespaces]]
 binding = "STORY_KV"
 id = "fe71b4e2e07546058027daf237a115c3"
+
+# ===== Ask-Human 澄清状态注册表（强一致 KV：跨 isolate 写后读立即可见，生产多实例可靠） =====
+[[kv_namespaces]]
+binding = "ASK_KV"
+id = "eee2f9627e304f9ca13ad2b29829aa76"
+consistency = "strong"

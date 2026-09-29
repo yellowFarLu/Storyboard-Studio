@@ -30,8 +30,8 @@ const MAX_LOOP_ATTEMPTS = 5; // ReAct 局部循环最大尝试次数：连续 5 
 const LLM_RETRY_MAX = 2; // 可重试上游错误（5xx/429/网络/超时）的最大重试次数
 const LLM_RETRY_BASE_MS = 500; // 退避基数（500ms → 1000ms 指数退避）
 
-/* Ask-Human 澄清（真实 human-in-the-loop）：进程内注册表，answer.js 从中 resolve */
-import { askRegistry } from "../../shared/ask-state.js";
+/* Ask-Human 澄清（真实 human-in-the-loop）：强一致 KV 注册表（跨实例可靠），answer.js 写回答、run.js 轮询续接 */
+import { createAsk, readAnswer, deleteAsk } from "../../shared/ask-state.js";
 
 const CLARIFY_MAX_ROUNDS = 3; // 一轮任务内最多澄清 3 次（支持重复咨询人类，解决复杂问题）
 const ASK_TIMEOUT_MS = 90000; // 单次澄清默认等待人类回答上限，超时使用默认值继续（不挂死流程）
@@ -72,26 +72,22 @@ const CLARIFY_RULES = [
 /** 检测下一条需要澄清的缺失项（已澄清的项不再重复问；目标本身已含信息则跳过） */
 function detectClarification(goal, clarifications) {
   const answered = new Set(clarifications.map((c) => c.key));
-  if (!answered.has("ending") && !/[反转|悲剧|虐|喜剧|温馨|治愈|惊悚|悬疑|圆满|HE|BE|爽]/.test(goal)) return CLARIFY_RULES[0];
-  if (!answered.has("audience") && !/[儿童|亲子|全年龄|成人|校园|尺度]/.test(goal)) return CLARIFY_RULES[1];
-  if (!answered.has("setting") && !/[现代|都市|古代|古装|未来|科幻|架空|民国|校园|末世|乡村|职场|豪门]/.test(goal)) return CLARIFY_RULES[2];
+  // 注意：使用分组（字串）而非字符类（单字），避免"太空→架空"这类单字误命中
+  if (!answered.has("ending") && !/(反转|悲剧|虐|喜剧|温馨|治愈|惊悚|悬疑|圆满|HE|BE|爽)/.test(goal)) return CLARIFY_RULES[0];
+  if (!answered.has("audience") && !/(儿童|亲子|全年龄|成人|校园|尺度)/.test(goal)) return CLARIFY_RULES[1];
+  if (!answered.has("setting") && !/(现代|都市|古代|古装|未来|科幻|架空|民国|校园|末世|乡村|职场|豪门)/.test(goal)) return CLARIFY_RULES[2];
   return null;
 }
 
-/** 发起一次澄清：SSE 发 ask 事件，挂起等待 answer.js resolve；超时用默认值继续 */
-function askHuman(env, controller, encoder, { clientRunId, rule, timeoutMs, round }) {
-  return new Promise((resolve) => {
+/** 发起一次澄清：SSE 发 ask 事件，KV 登记后轮询人类回答；超时用默认值继续（跨实例可靠） */
+async function askHuman(env, controller, encoder, { clientRunId, rule, timeoutMs, round }) {
+  return new Promise(async (resolve) => {
     const askId = crypto.randomUUID();
-    const timer = setTimeout(() => {
-      askRegistry.delete(askId);
-      resolve({ key: rule.key, question: rule.question, answer: rule.options[0].value, answeredBy: "timeout-default", note: `${Math.round(timeoutMs / 1000)}s 未应答，已使用默认值` });
-    }, timeoutMs);
-    askRegistry.set(askId, {
-      resolve: (ans) => { clearTimeout(timer); askRegistry.delete(askId); resolve(ans); },
-      clientRunId,
-      key: rule.key,
-      question: rule.question,
-    });
+    try { await createAsk(env, { askId, clientRunId, rule, timeoutMs }); } catch (e) {
+      // KV 写入失败（如本地未配置 ASK_KV）：降级为直接使用默认值继续，不挂死流程
+      resolve({ key: rule.key, question: rule.question, answer: rule.options[0].value, answeredBy: "timeout-default", note: "澄清登记写入失败，已使用默认值" });
+      return;
+    }
     sseEvent(controller, encoder, "ask", {
       askId,
       clientRunId,
@@ -100,6 +96,20 @@ function askHuman(env, controller, encoder, { clientRunId, rule, timeoutMs, roun
       options: rule.options,
       hint: `${Math.round(timeoutMs / 1000)} 秒内未应答将自动使用默认值继续`,
     });
+    const start = Date.now();
+    const defaultAns = { key: rule.key, question: rule.question, answer: rule.options[0].value, answeredBy: "timeout-default", note: `${Math.round(timeoutMs / 1000)}s 未应答，已使用默认值` };
+    while (Date.now() - start < timeoutMs) {
+      let ans = null;
+      try { ans = await readAnswer(env, askId); } catch { /* 读失败继续轮询 */ }
+      if (ans && ans.answer) {
+        await deleteAsk(env, askId);
+        resolve(ans);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+    await deleteAsk(env, askId);
+    resolve(defaultAns);
   });
 }
 
