@@ -15,6 +15,8 @@
     reactLogs: {},
     plan: [],
     toolLogs: [],
+    clarifications: [], // Ask-Human 人类澄清记录（真实 human-in-the-loop）
+    pendingAsk: null,
     model: "未连接",
     running: false,
     view: "optimized",
@@ -104,6 +106,7 @@
       status: "running", // running / done / failed / interrupted
       plan: [],
       toolLogs: [],
+      clarifications: [],
       outline: null,
       board: [],
       checks: null,
@@ -123,6 +126,7 @@
       t.plan = state.plan;
       t.toolLogs = state.toolLogs;
       t.reactLogs = state.reactLogs;
+      t.clarifications = state.clarifications;
       t.outline = state.outline;
       t.board = state.board;
       t.originalBoard = state.originalBoard;
@@ -219,6 +223,83 @@
         overlay.remove();
         document.removeEventListener("keydown", esc);
       }
+    });
+  }
+
+  /* ===== Ask-Human 澄清弹窗（真实 human-in-the-loop）：选项 + 自由输入 + 跳过 ===== */
+  function showClarifyModal(ask) {
+    closeClarifyModal();
+    var overlay = document.createElement("div");
+    overlay.id = "ask-modal";
+    overlay.className = "modal-overlay";
+    var box = document.createElement("div");
+    box.className = "modal-box";
+    var title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = "👋 Agent 需要与你确认";
+    var sub = document.createElement("div");
+    sub.className = "modal-sub";
+    sub.textContent = ask.question;
+    var opts = document.createElement("div");
+    opts.className = "modal-options";
+    ask.options.forEach(function (o) {
+      var b = mkBtn(o.label, "btn btn-opt", function () { submitClarify(ask.askId, o.value); });
+      opts.appendChild(b);
+    });
+    var input = document.createElement("input");
+    input.className = "modal-input";
+    input.type = "text";
+    input.placeholder = "或输入你的自定义回答，回车提交…";
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        var v = input.value.trim();
+        if (v) submitClarify(ask.askId, v);
+      }
+    });
+    var actions = document.createElement("div");
+    actions.className = "modal-actions";
+    var hint = document.createElement("span");
+    hint.className = "modal-sub";
+    hint.style.margin = "0";
+    hint.textContent = ask.hint || "";
+    var skip = mkBtn("跳过（用默认）", "btn btn-ghost", function () { submitClarify(ask.askId, ask.options[0].value); });
+    actions.appendChild(hint);
+    actions.appendChild(skip);
+    box.appendChild(title);
+    box.appendChild(sub);
+    box.appendChild(opts);
+    box.appendChild(input);
+    box.appendChild(actions);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    setTimeout(function () { input.focus(); }, 60);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) closeClarifyModal(); });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape" && document.getElementById("ask-modal")) {
+        closeClarifyModal();
+        document.removeEventListener("keydown", esc);
+      }
+    });
+  }
+  function closeClarifyModal() {
+    var m = document.getElementById("ask-modal");
+    if (m) m.remove();
+    state.pendingAsk = null;
+  }
+  function submitClarify(askId, answer) {
+    if (!state.running || !currentTaskId) { closeClarifyModal(); return; }
+    fetch("/api/agent/answer", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientRunId: currentTaskId, askId: askId, answer: answer }),
+    }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d.ok) toast("回答提交失败：" + (d.error || "未知原因"), true);
+      else toast("已收到你的回答，Agent 继续执行");
+      closeClarifyModal();
+    }).catch(function () {
+      toast("回答提交失败（网络错误）", true);
+      closeClarifyModal();
     });
   }
 
@@ -351,6 +432,7 @@
     state.reactLogs = t.reactLogs || {};
     state.plan = t.plan || [];
     state.toolLogs = t.toolLogs || [];
+    state.clarifications = t.clarifications || [];
     state.model = t.model || "未连接";
     ideaInput.value = state.goal;
     agentPanel.classList.remove("section-hidden");
@@ -402,6 +484,7 @@
     gen_outline: "生成三幕大纲",
     gen_board: "生成分镜脚本",
     check_structure: "结构检查",
+    ask_human: "咨询人类（澄清）",
   };
   function renderPlan() {
     var box = $("agent-plan");
@@ -895,6 +978,8 @@
     state.reactLogs = {};
     state.plan = [];
     state.toolLogs = [];
+    state.clarifications = [];
+    state.pendingAsk = null;
     state.running = true;
     state.view = "optimized";
 
@@ -920,7 +1005,7 @@
     $("agent-mode-badge").className = "badge badge-ai";
     setStep(0);
 
-    var payload = { goal: goal, memory: memoryList };
+    var payload = { goal: goal, memory: memoryList, clientRunId: task.id };
 
     fetch("/api/agent/run", {
       method: "POST",
@@ -972,7 +1057,11 @@
       var obj;
       try { obj = JSON.parse(data); } catch (e) { return; }
 
-      if (event === "stage") {
+      if (event === "ask") {
+        // Ask-Human 澄清（真实 human-in-the-loop）：弹窗收集人类回答
+        state.pendingAsk = obj;
+        showClarifyModal(obj);
+      } else if (event === "stage") {
         if (obj.step === "react") {
           if (!state.reactLogs[obj.tool]) state.reactLogs[obj.tool] = [];
           var rl = state.reactLogs[obj.tool];
@@ -998,6 +1087,20 @@
         } else if (obj.step === "reflect" && obj.reflection) {
           state.reflection = obj.reflection;
           snapshotTask();
+        } else if (obj.step === "ask") {
+          // Ask-Human 澄清过程记录（真实：人类回答注入后续生成）
+          if (obj.status === "running") {
+            toast("Agent 正在向你确认：" + (obj.message || "…"));
+          } else if (obj.status === "done") {
+            state.clarifications.push({ question: obj.question, answer: obj.answer, answeredBy: obj.answeredBy, note: obj.note || "" });
+            state.toolLogs.push({
+              tool: "ask_human",
+              status: "done",
+              mock: false,
+              summary: "人类澄清：" + obj.question + " → " + obj.answer + (obj.answeredBy === "timeout-default" ? "（超时默认值）" : "（人工回答）"),
+            });
+            renderToolLog();
+          }
         } else if (obj.step === "human") {
           // ReAct 局部循环熔断：钉钉通知人类（Mock）
           state.toolLogs.push({
@@ -1025,6 +1128,7 @@
         });
         if (hasDetail) state.reactLogs = serverLogs;
         state.toolLogs = obj.toolLogs || [];
+        state.clarifications = obj.clarifications || state.clarifications;
         if (obj.model) state.model = obj.model;
         renderPlan();
         renderToolLog();
@@ -1039,6 +1143,7 @@
         }
         snapshotTask();
         renderTaskList();
+        closeClarifyModal();
         if (obj.humanNotified) {
           toast("⚠ ReAct 循环连续失败，已 Mock 钉钉通知人类（best-effort 交付当前结果）", true);
         }
@@ -1049,6 +1154,7 @@
         }
         state.toolLogs.push({ tool: "agent", status: "failed", summary: errMsg });
         renderToolLog();
+        closeClarifyModal();
         toast("执行失败：" + errMsg, true);
         for (var j = 0; j < tasks.length; j++) {
           if (tasks[j].id === currentTaskId) tasks[j].status = "failed";

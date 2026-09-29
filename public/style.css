@@ -560,3 +560,18 @@ td[contenteditable="true"]:focus {
 .modal-input:focus { border-color: rgba(56, 189, 248, .6); box-shadow: 0 0 0 3px rgba(56, 189, 248, .12); }
 .modal-input::placeholder { color: #5d7a92; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 14px; }
+
+/* ===== Ask-Human 澄清弹窗（真实 human-in-the-loop） ===== */
+.modal-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.btn-opt {
+  border: 1px solid rgba(56, 189, 248, .35);
+  background: rgba(56, 189, 248, .08);
+  color: #bde8ff;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all .18s;
+}
+.btn-opt:hover { background: rgba(56, 189, 248, .18); border-color: rgba(56, 189, 248, .6); transform: translateY(-1px); }
+.modal-box input.modal-input { min-height: 40px; height: 40px; }

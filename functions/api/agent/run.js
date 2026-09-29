@@ -30,6 +30,102 @@ const MAX_LOOP_ATTEMPTS = 5; // ReAct 局部循环最大尝试次数：连续 5 
 const LLM_RETRY_MAX = 2; // 可重试上游错误（5xx/429/网络/超时）的最大重试次数
 const LLM_RETRY_BASE_MS = 500; // 退避基数（500ms → 1000ms 指数退避）
 
+/* Ask-Human 澄清（真实 human-in-the-loop）：进程内注册表，answer.js 从中 resolve */
+import { askRegistry } from "../../shared/ask-state.js";
+
+const CLARIFY_MAX_ROUNDS = 3; // 一轮任务内最多澄清 3 次（支持重复咨询人类，解决复杂问题）
+const ASK_TIMEOUT_MS = 90000; // 单次澄清默认等待人类回答上限，超时使用默认值继续（不挂死流程）
+
+/** 澄清规则引擎（本地规则，真实可解释）：检测创作目标中会显著影响产出方向的信息缺失 */
+const CLARIFY_RULES = [
+  {
+    key: "ending",
+    question: "这个故事的整体基调与结局方向是？",
+    options: [
+      { label: "强反转（爽感/意外）", value: "强反转" },
+      { label: "悲情/虐心", value: "悲情" },
+      { label: "喜剧/温馨治愈", value: "喜剧温馨" },
+      { label: "惊悚/悬疑", value: "惊悚悬疑" },
+    ],
+  },
+  {
+    key: "audience",
+    question: "目标受众与内容尺度？",
+    options: [
+      { label: "全年龄向", value: "全年龄" },
+      { label: "成人向（可更黑暗）", value: "成人向" },
+      { label: "亲子/儿童向", value: "亲子" },
+    ],
+  },
+  {
+    key: "setting",
+    question: "故事发生在什么时代/环境？（默认现代都市）",
+    options: [
+      { label: "现代都市", value: "现代都市" },
+      { label: "古代/古装", value: "古代" },
+      { label: "未来/科幻", value: "未来科幻" },
+      { label: "架空世界", value: "架空" },
+    ],
+  },
+];
+
+/** 检测下一条需要澄清的缺失项（已澄清的项不再重复问；目标本身已含信息则跳过） */
+function detectClarification(goal, clarifications) {
+  const answered = new Set(clarifications.map((c) => c.key));
+  if (!answered.has("ending") && !/[反转|悲剧|虐|喜剧|温馨|治愈|惊悚|悬疑|圆满|HE|BE|爽]/.test(goal)) return CLARIFY_RULES[0];
+  if (!answered.has("audience") && !/[儿童|亲子|全年龄|成人|校园|尺度]/.test(goal)) return CLARIFY_RULES[1];
+  if (!answered.has("setting") && !/[现代|都市|古代|古装|未来|科幻|架空|民国|校园|末世|乡村|职场|豪门]/.test(goal)) return CLARIFY_RULES[2];
+  return null;
+}
+
+/** 发起一次澄清：SSE 发 ask 事件，挂起等待 answer.js resolve；超时用默认值继续 */
+function askHuman(env, controller, encoder, { clientRunId, rule, timeoutMs, round }) {
+  return new Promise((resolve) => {
+    const askId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      askRegistry.delete(askId);
+      resolve({ key: rule.key, question: rule.question, answer: rule.options[0].value, answeredBy: "timeout-default", note: `${Math.round(timeoutMs / 1000)}s 未应答，已使用默认值` });
+    }, timeoutMs);
+    askRegistry.set(askId, {
+      resolve: (ans) => { clearTimeout(timer); askRegistry.delete(askId); resolve(ans); },
+      clientRunId,
+      key: rule.key,
+      question: rule.question,
+    });
+    sseEvent(controller, encoder, "ask", {
+      askId,
+      clientRunId,
+      round,
+      question: rule.question,
+      options: rule.options,
+      hint: `${Math.round(timeoutMs / 1000)} 秒内未应答将自动使用默认值继续`,
+    });
+  });
+}
+
+/** 澄清循环：执行前反复检测缺失信息并咨询人类，支持重复澄清（≤3 轮），回答注入后续生成 */
+async function clarifyLoop(env, controller, encoder, goal, clientRunId, timeoutMs) {
+  const clarifications = [];
+  for (let round = 0; round < CLARIFY_MAX_ROUNDS; round++) {
+    let enriched = goal;
+    if (clarifications.length) {
+      enriched += "\n用户澄清（必须遵守）：\n" + clarifications.map((c) => `· ${c.question} → ${c.answer}`).join("\n");
+    }
+    const rule = detectClarification(enriched, clarifications);
+    if (!rule) break;
+    sseEvent(controller, encoder, "stage", { step: "ask", status: "running", round, message: `Agent 需要向人类确认：${rule.question}` });
+    const ans = await askHuman(env, controller, encoder, { clientRunId, rule, timeoutMs, round });
+    clarifications.push(ans);
+    sseEvent(controller, encoder, "stage", {
+      step: "ask", status: "done", round,
+      question: rule.question, answer: ans.answer,
+      answeredBy: ans.answeredBy,
+      note: ans.note || "",
+    });
+  }
+  return clarifications;
+}
+
 /** 错误分级：识别可重试（transient）与不可重试（permanent）错误 */
 function classifyError(e) {
   const msg = ((e && e.message) || String(e));
@@ -458,7 +554,7 @@ export async function onRequestPost(context) {
       status: 400, headers: { "content-type": "application/json; charset=utf-8" },
     });
   }
-  const goal = typeof body.goal === "string" ? body.goal.trim() : "";
+  let goal = typeof body.goal === "string" ? body.goal.trim() : "";
   if (goal.length < 4) {
     return new Response(JSON.stringify({ ok: false, error: "创作目标至少 4 个字" }), {
       status: 400, headers: { "content-type": "application/json; charset=utf-8" },
@@ -466,10 +562,20 @@ export async function onRequestPost(context) {
   }
   const memory = Array.isArray(body.memory) ? body.memory.filter((m) => typeof m === "string" && m.trim()) : [];
   const memoryText = memory.map((m) => `· ${m}`).join("\n");
+  const clientRunId = typeof body.clientRunId === "string" && body.clientRunId ? body.clientRunId : crypto.randomUUID();
+  // askTimeoutMs 仅用于测试/演示可缩短等待，生产默认 90s；约束范围防误传
+  let askTimeoutMs = ASK_TIMEOUT_MS;
+  if (Number.isFinite(Number(body.askTimeoutMs))) {
+    askTimeoutMs = Math.min(180000, Math.max(3000, Number(body.askTimeoutMs)));
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      // SSE keepalive：澄清等待人类回答期间保持连接（平台空闲超时防护）
+      const keepalive = setInterval(() => {
+        try { controller.enqueue(encoder.encode(": ping\n\n")); } catch { clearInterval(keepalive); }
+      }, 15000);
       try {
         // ===== P: Plan（多节点规划，Plan-And-Execute） =====
         sseEvent(controller, encoder, "stage", { step: "plan", status: "running", message: "Agent 正在规划创作路径…" });
@@ -480,6 +586,13 @@ export async function onRequestPost(context) {
           adjusted: planResult.adjusted, fallback: !!planResult.fallback,
           message: planResult.adjusted ? "Agent 修正了步骤依赖顺序（大纲必须先于分镜）" : "计划已确认",
         });
+
+        // ===== Pre-Execute: Ask-Human 澄清（真实 human-in-the-loop，支持重复澄清） =====
+        const clarifications = await clarifyLoop(env, controller, encoder, goal, clientRunId, askTimeoutMs);
+        if (clarifications.length) {
+          // 澄清注入：作为硬约束拼入目标文本，后续大纲/分镜生成自然携带
+          goal += "\n用户澄清（必须遵守）：\n" + clarifications.map((c) => `· ${c.question} → ${c.answer}${c.answeredBy === "timeout-default" ? `（${c.note}）` : ""}`).join("\n");
+        }
 
         let outline = null;
         let board = null;
@@ -586,6 +699,7 @@ export async function onRequestPost(context) {
           reactLogs,
           toolLogs,
           memoryUsed: memoryText ? memory : [],
+          clarifications,
           humanNotified: !!(outlineHuman || boardHuman),
           humanNotice: outlineHuman || boardHuman || null,
         });
@@ -593,6 +707,7 @@ export async function onRequestPost(context) {
         const cls = e.classified || classifyError(e);
         sseEvent(controller, encoder, "error", { message: e.message || "Agent 执行失败", classified: cls });
       } finally {
+        clearInterval(keepalive);
         try { controller.close(); } catch { /* already closed */ }
       }
     },
