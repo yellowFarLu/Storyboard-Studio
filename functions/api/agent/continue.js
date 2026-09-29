@@ -40,7 +40,7 @@ async function callLLM(env, messages, temperature = 0.7) {
   return { content, model };
 }
 
-/** 容错解析模型输出 JSON（与 run.js 同实现） */
+/** 容错解析模型输出 JSON：剥离代码块/多余文字 → 容忍尾逗号 → JSON.parse → Function 兜底 */
 function parseJsonLoose(text) {
   if (!text || typeof text !== "string") throw new Error("模型返回为空");
   let s = text.trim();
@@ -50,7 +50,13 @@ function parseJsonLoose(text) {
   const lastClose = Math.max(s.lastIndexOf("}"), s.lastIndexOf("]"));
   if (firstOpen === -1 || lastClose <= firstOpen) throw new Error("模型输出中未找到有效 JSON");
   s = s.slice(firstOpen, lastClose + 1);
-  return JSON.parse(s);
+  s = s.replace(/,\s*(\}|\])/g, "$1"); // 容忍尾逗号
+  try { return JSON.parse(s); } catch (e) {
+    try {
+      // 兜底：JS 求值容忍更多非标准语法（仅解析用，不执行外部代码）
+      return Function('"use strict";return (' + s + ")")();
+    } catch (e2) { throw new Error("模型输出不是合法 JSON：" + e.message); }
+  }
 }
 
 /** 归一化分镜数组（与 run.js 同实现） */
@@ -131,21 +137,38 @@ function actSystem(actName, actNo) {
 [{"scene":"场景","scale":"景别","camera":"运镜","action":"画面动作描述","dialogue":"台词（无则空串）","caption":"字幕建议","duration":5}]`;
 }
 
-/* ==================== ReAct 生成第二幕（生成 → 规则校验 → 自纠最多 1 轮） ==================== */
-async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText) {
+/* ==================== ReAct 续写第 N 幕（生成 → 规则校验 → 自纠最多 1 轮；JSON 解析失败也走自纠） ==================== */
+async function genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText) {
   const reactLog = [];
   let shots = null;
   let checks = null;
   let model = "";
+  let lastJsonError = null;
+
+  const baseUser = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n已完成分镜（前 ${prevBoard.length} 镜，供承接）：\n${JSON.stringify(prevBoard, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${extraText ? `\n用户对${actName}的补充要求：\n${extraText}\n请在分镜中明确体现（场景/人物/情节）。\n` : ""}`;
 
   for (let round = 0; round <= MAX_FIX_ROUNDS; round++) {
     const isFix = round > 0;
-    const user = `创作目标：${goal}\n\n三幕大纲：\n${JSON.stringify(outline || {}, null, 2)}\n\n已完成分镜（前 ${prevBoard.length} 镜，供承接）：\n${JSON.stringify(prevBoard, null, 2)}\n${memoryText ? `\n记忆（用户创作偏好）：\n${memoryText}\n` : ""}${isFix ? `\n上一版${actName}分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整${actName}分镜 JSON 数组。` : `\n请为${actName}输出分镜脚本 JSON 数组。`}`;
+    let fixHint = "";
+    if (isFix && lastJsonError) {
+      fixHint = `上一版模型输出 JSON 解析失败（${lastJsonError}），请严格只输出一个合法的 JSON 数组，不要包含任何解释文字、代码块标记或尾逗号。`;
+    } else if (isFix) {
+      fixHint = `上一版${actName}分镜的结构问题（需修正）：\n${checks.issues.join("\n")}\n请输出修正后的完整${actName}分镜 JSON 数组。`;
+    }
+    const user = baseUser + (fixHint ? `\n${fixHint}` : `\n请为${actName}输出分镜脚本 JSON 数组。`);
     const llmOut = await callLLM(env, [{ role: "system", content: actSystem(actName, actNo) }, { role: "user", content: user }], 0.8);
     model = llmOut.model;
-    shots = normalizeBoard(parseJsonLoose(llmOut.content));
+    try {
+      shots = normalizeBoard(parseJsonLoose(llmOut.content));
+      lastJsonError = null;
+    } catch (e) {
+      lastJsonError = e.message;
+      reactLog.push({ round, jsonError: e.message });
+      if (round >= MAX_FIX_ROUNDS) throw e;
+      continue; // 解析失败 → 下一轮自纠（prompt 提示严格输出 JSON）
+    }
 
-    // Observe
+    // Observe：本地规则校验
     checks = checkStructure(shots);
     reactLog.push({ round, issues: checks.issues.length });
     if (checks.passed) break;
@@ -199,11 +222,12 @@ export async function onRequest(context) {
   const outline = body.outline && typeof body.outline === "object" ? body.outline : null;
   const memory = Array.isArray(body.memory) ? body.memory.filter((m) => typeof m === "string" && m.trim()) : [];
   const memoryText = memory.map((m) => `· ${m}`).join("\n");
+  const extraText = typeof body.extra === "string" ? body.extra.trim() : "";
 
   const prevBoard = normalizeBoard(body.board);
 
   try {
-    const { shots, checks, model, reactLog, fixed } = await genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText);
+    const { shots, checks, model, reactLog, fixed } = await genAct2ReAct(env, actName, actNo, goal, outline, prevBoard, memoryText, extraText);
     return new Response(JSON.stringify({
       ok: true,
       act: actName,

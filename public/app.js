@@ -179,6 +179,86 @@
     if (t.status === "interrupted") return { cls: "badge-warn", text: "已中断" };
     return { cls: "badge-ai", text: "运行中" };
   }
+  /* ===== 续写输入弹窗：支持输入本幕/新一集补充要求（可空） ===== */
+  function openContinueModal(nextActName, onConfirm) {
+    if (document.getElementById("continue-modal")) return;
+    var overlay = document.createElement("div");
+    overlay.id = "continue-modal";
+    overlay.className = "modal-overlay";
+    var box = document.createElement("div");
+    box.className = "modal-box";
+    var title = document.createElement("div");
+    title.className = "modal-title";
+    title.textContent = "续写" + nextActName;
+    var sub = document.createElement("div");
+    sub.className = "modal-sub";
+    sub.textContent = "可填写本幕 / 新一集补充要求；留空则由 Agent 自动承接上一幕继续创作。";
+    var ta = document.createElement("textarea");
+    ta.className = "modal-input";
+    ta.rows = 3;
+    ta.placeholder = "例如：新一集让主角去到国外，遇到神秘买家…（可选，可留空）";
+    var btns = document.createElement("div");
+    btns.className = "modal-actions";
+    var cancel = mkBtn("取消", "btn btn-ghost", function () { overlay.remove(); });
+    var ok = mkBtn("开始续写", "btn btn-primary", function () {
+      overlay.remove();
+      onConfirm(ta.value.trim());
+    });
+    btns.appendChild(cancel);
+    btns.appendChild(ok);
+    box.appendChild(title);
+    box.appendChild(sub);
+    box.appendChild(ta);
+    box.appendChild(btns);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    setTimeout(function () { ta.focus(); }, 60);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+    document.addEventListener("keydown", function esc(e) {
+      if (e.key === "Escape" && document.getElementById("continue-modal")) {
+        overlay.remove();
+        document.removeEventListener("keydown", esc);
+      }
+    });
+  }
+
+  /* ===== 执行续写请求：成功后追加分镜到工作台并刷新全部视图 ===== */
+  function doContinue(t, nextAct, nextActName, extra, btnEl) {
+    btnEl.disabled = true;
+    btnEl.textContent = "续写中…";
+    toast("正在基于已完成分镜续写" + nextActName + (extra ? "（已带入你的补充要求）" : "") + "…");
+    restoreTask(t.id);
+    fetch("/api/agent/continue", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList, actNo: nextAct, extra: extra || "" })
+    })
+    .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
+    .then(function (res) {
+      if (!res.d.ok) {
+        toast("续写失败：" + (res.d.error || ("HTTP " + res.status)), true);
+        return;
+      }
+      // 追加镜头到工作台并刷新全部视图（工作台/检查/场景统计/历史）
+      state.board = state.board.concat(res.d.shots);
+      renderBoard();
+      refreshChecksLocal();
+      for (var k = 0; k < tasks.length; k++) {
+        if (tasks[k].id === t.id) { tasks[k].board = state.board; tasks[k].checks = state.checks; tasks[k].actNo = res.d.actNo; break; }
+      }
+      saveTasks();
+      renderTaskList();
+      showView("workspace");
+      toast("已续写" + res.d.act + " " + res.d.actCount + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
+    })
+    .catch(function (e) {
+      toast("续写失败：" + e.message, true);
+    })
+    .finally(function () {
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = "续写" + nextActName; }
+    });
+  }
+
   function mkBtn(label, cls, fn) {
     var b = document.createElement("button");
     b.type = "button";
@@ -227,39 +307,9 @@
         btnCont = mkBtn("续写" + nextActName, "btn btn-ghost btn-sm", function () {
           var self = this;
           if (self.disabled) return;
-          self.disabled = true;
-          self.textContent = "续写中…";
-          toast("正在基于已完成分镜续写" + nextActName + "…");
-          restoreTask(t.id);
-          fetch("/api/agent/continue", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ goal: t.goal, outline: t.outline || null, board: t.board || [], memory: memoryList, actNo: nextAct })
-          })
-          .then(function (r) { return r.json().then(function (d) { return { status: r.status, d: d }; }); })
-          .then(function (res) {
-            if (!res.d.ok) {
-              toast("续写失败：" + (res.d.error || ("HTTP " + res.status)), true);
-              return;
-            }
-            // 追加镜头到工作台并刷新全部视图
-            state.board = state.board.concat(res.d.shots);
-            renderBoard();
-            refreshChecksLocal();
-            // 写回任务（含已完成幕数）并刷新历史列表
-            for (var k = 0; k < tasks.length; k++) {
-              if (tasks[k].id === t.id) { tasks[k].board = state.board; tasks[k].checks = state.checks; tasks[k].actNo = res.d.actNo; break; }
-            }
-            saveTasks();
-            renderTaskList();
-            showView("workspace");
-            toast("已续写" + res.d.act + " " + res.d.actCount + " 镜（共 " + res.d.totalShots + " 镜 · 结构检查" + (res.d.checks.passed ? "通过" : "发现 " + res.d.checks.issues.length + " 项告警") + "）");
-          })
-          .catch(function (e) {
-            toast("续写失败：" + e.message, true);
-          })
-          .finally(function () {
-            if (btnCont) { btnCont.disabled = false; btnCont.textContent = "续写" + nextActName; }
+          // 弹输入框：可填写本幕/新一集补充要求（留空则自动承接上一幕）
+          openContinueModal(nextActName, function (extra) {
+            doContinue(t, nextAct, nextActName, extra, self);
           });
         });
       }
